@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#171717">
+  <title>朋友出題大會</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">?</div>
+    <div>
+      <h1>朋友出題大會</h1>
+      <p>你出的題，大家來答。</p>
+    </div>
+    <span id="connection" class="status">尚未連線</span>
+  </header>
+
+  <main class="container">
+    <section id="setup" class="panel">
+      <h2>進入遊戲</h2>
+      <p class="muted">輸入房間代碼、暱稱與個人 PIN。主持人請選擇「建立房間」。</p>
+      <label>Supabase 設定狀態</label>
+      <div id="configNotice" class="notice">請先編輯 config.js，填入 Supabase URL 與 anon key。</div>
+      <div class="field">
+        <label for="roomCode">房間代碼</label>
+        <input id="roomCode" autocomplete="off" maxlength="12" placeholder="例如 PARTY26">
+      </div>
+      <div class="field">
+        <label for="nickname">你的暱稱</label>
+        <input id="nickname" autocomplete="nickname" maxlength="24" placeholder="聚餐用暱稱">
+      </div>
+      <div class="field">
+        <label for="pin">個人作答 PIN（4～8 位數字）</label>
+        <input id="pin" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="只給自己使用">
+      </div>
+      <div class="button-row">
+        <button id="joinBtn" class="primary">加入房間</button>
+        <button id="createBtn" class="secondary">建立房間（主持人）</button>
+      </div>
+      <p class="tiny muted">測試提醒：同一個暱稱在同一房間只能註冊一次。請記住 PIN；遺失時需由主持人處理或重建測試房間。</p>
+    </section>
+
+    <section id="app" hidden>
+      <div class="room-strip">
+        <div><span class="muted">房間</span><strong id="roomLabel">—</strong></div>
+        <div><span class="muted">登入身分</span><strong id="playerLabel">—</strong></div>
+        <button id="leaveBtn" class="small secondary">離開</button>
+      </div>
+
+      <nav class="tabs" aria-label="遊戲功能">
+        <button data-view="home" class="tab active">大廳</button>
+        <button data-view="author" class="tab">我的題目</button>
+        <button data-view="play" class="tab">開始作答</button>
+        <button data-view="results" class="tab">閱卷／結果</button>
+      </nav>
+
+      <section id="view-home" class="panel view">
+        <h2>遊戲大廳</h2>
+        <div class="stats">
+          <div class="stat"><strong id="memberCount">0</strong><span>參加者</span></div>
+          <div class="stat"><strong id="questionCount">0</strong><span>題目</span></div>
+          <div class="stat"><strong id="submittedCount">0</strong><span>已交卷</span></div>
+        </div>
+        <p id="roomState" class="notice">載入中…</p>
+        <div id="hostControls" class="stack" hidden>
+          <button id="lockBtn" class="primary">鎖定題庫並開放作答</button>
+          <button id="revealBtn" class="danger">公布答案並開始閱卷</button>
+          <p class="tiny muted">公布答案後無法回復隱藏狀態。請先確認大家都已交卷。</p>
+        </div>
+        <h3>參加者</h3>
+        <ul id="membersList" class="member-list"></ul>
+      </section>
+
+      <section id="view-author" class="panel view" hidden>
+        <div class="section-heading">
+          <div><h2>我的題目</h2><p class="muted">每人固定 10 題；每題可設定配分。</p></div>
+          <strong id="myQuestionCount">0 / 10</strong>
+        </div>
+        <div id="authorLocked" class="notice" hidden>題庫已鎖定，不能再修改。</div>
+        <form id="questionForm">
+          <input id="editQuestionId" type="hidden">
+          <div class="field">
+            <label for="qType">題型</label>
+            <select id="qType">
+              <option value="single">選擇題</option>
+              <option value="boolean">是非題</option>
+              <option value="fill">填空題</option>
+              <option value="short">簡答題（人工評分）</option>
+              <option value="image">圖片題</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="qText">題目內容</label>
+            <textarea id="qText" rows="3" maxlength="1200" required placeholder="輸入題目…"></textarea>
+          </div>
+          <div id="optionsField" class="field">
+            <label>選項（每行一個，選擇題需 2～6 個）</label>
+            <textarea id="qOptions" rows="4" placeholder="選項 A&#10;選項 B&#10;選項 C&#10;選項 D"></textarea>
+          </div>
+          <div class="field">
+            <label for="qAnswer">標準答案／正確選項</label>
+            <input id="qAnswer" maxlength="1000" placeholder="例如：選項 A；是非題填 true 或 false">
+            <p class="tiny muted">簡答題請填參考答案；填空題可用 | 分隔可接受答案，例如：台北|臺北。</p>
+          </div>
+          <div class="field">
+            <label for="qExplanation">答案解析（選填）</label>
+            <textarea id="qExplanation" rows="2" maxlength="1200" placeholder="公布答案時顯示"></textarea>
+          </div>
+          <div class="field">
+            <label for="qPoints">配分</label>
+            <input id="qPoints" type="number" min="1" max="100" value="1" required>
+          </div>
+          <div id="imageField" class="field" hidden>
+            <label for="qImage">題目圖片（JPG、PNG、WebP，最大 5 MB）</label>
+            <input id="qImage" type="file" accept="image/jpeg,image/png,image/webp">
+          </div>
+          <div class="button-row">
+            <button id="saveQuestionBtn" class="primary" type="submit">儲存題目</button>
+            <button id="cancelEditBtn" class="secondary" type="button" hidden>取消編輯</button>
+          </div>
+        </form>
+        <h3>已建立的題目</h3>
+        <div id="myQuestions" class="question-list"></div>
+      </section>
+
+      <section id="view-play" class="panel view" hidden>
+        <div class="section-heading"><div><h2>作答區</h2><p class="muted">作答前不會顯示正解與出題者。</p></div><strong id="playProgress">0 / 0</strong></div>
+        <div id="playNotice" class="notice">主持人鎖定題庫並開放作答後，即可開始。</div>
+        <div id="playQuestions" class="question-list"></div>
+        <button id="submitAnswersBtn" class="primary wide" hidden>確認交卷</button>
+      </section>
+
+      <section id="view-results" class="panel view" hidden>
+        <h2>閱卷與排行榜</h2>
+        <p id="resultsNotice" class="notice">所有人交卷後，由主持人公布答案。</p>
+        <div id="gradingArea"></div>
+        <div id="leaderboard"></div>
+        <div id="answerReview" class="question-list"></div>
+      </section>
+    </section>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </main>
+
+  <footer>朋友出題大會 · 測試版</footer>
+  <script src="./config.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
