@@ -76,8 +76,8 @@ $("joinBtn").addEventListener("click",()=>joinRoom(false));
 $("createBtn").addEventListener("click",()=>joinRoom(true));
 $("leaveBtn").addEventListener("click",()=>{session={room:null,player:null,isHost:false};$("app").hidden=true;$("setup").hidden=false;status("已離開");});
 $("qType").addEventListener("change",updateQuestionType);
-function renderChoiceEditor(values=[] , selected="") {
-  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<label class="choice-editor"><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}><span>${String.fromCharCode(65+i)}.</span><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc(values[i]||"")}"></label>`).join("");
+function renderChoiceEditor(values=[] , selected="", images=[]) {
+  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc(values[i]||"")}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?"已附圖片；上傳新圖片可替換":""}</span></div>`).join("");
 }
 function updatePointsHint(){
   const editing=$("editQuestionId").value;
@@ -95,11 +95,11 @@ function updateQuestionType(){
   $("optionsField").hidden=t!=="single";
   $("booleanField").hidden=t!=="boolean";
   $("answerField").hidden=t==="single"||t==="boolean";
-  $("imageField").hidden=t!=="image";
+  $("imageField").hidden=false;
   if(t==="single" && !$("singleOptions").children.length) renderChoiceEditor();
 }
 function resetQuestionForm(){
-  $("editQuestionId").value="";$("questionForm").reset();$("qPoints").value=10;$("singleOptions").innerHTML="";renderChoiceEditor();
+  $("editQuestionId").value="";$("questionForm").reset();$("qPoints").value=10;$("singleOptions").innerHTML="";renderChoiceEditor();$("currentQuestionImage").textContent="";
   $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();
 }
 $("cancelEditBtn").addEventListener("click",resetQuestionForm);
@@ -122,7 +122,6 @@ $("questionForm").addEventListener("submit",async e=>{
   if(used+points+remaining>100) return toast(`配分過高！還有 ${remaining} 題必須各保留至少 1 分。`);
   if(remaining===0 && used+points!==100) return toast("第 10 題必須補足至 100 分。");
   if(type==="boolean" && !["true","false","是","否"].includes(answer.toLowerCase())) return toast("是非題答案請填 true、false、是或否。");
-  if(type==="image" && !$("qImage").files[0] && !$("editQuestionId").value) return toast("圖片題請選擇一張圖片。");
   if(type==="single" && !options.includes(answer)) return toast("選擇題的答案必須完全符合其中一個選項。");
   if(myQuestions.length>=10 && !$("editQuestionId").value) return toast("每人最多建立 10 題。");
   setBusy(true);
@@ -130,16 +129,24 @@ $("questionForm").addEventListener("submit",async e=>{
     let imagePath=null;
     const existing=myQuestions.find(q=>q.id===$("editQuestionId").value);
     imagePath=existing?.image_path||null;
-    const file=$("qImage").files[0];
-    if(file){
+    async function uploadImage(file){
+      if(!file) return null;
       if(file.size>5*1024*1024) throw new Error("圖片不可超過 5 MB。");
       if(!["image/jpeg","image/png","image/webp"].includes(file.type)) throw new Error("只接受 JPG、PNG、WebP 圖片。");
       const ext=file.type==="image/png"?"png":file.type==="image/webp"?"webp":"jpg";
-      imagePath=`${session.room}/${session.player}/${crypto.randomUUID()}.${ext}`;
-      const {error}=await supabase.storage.from("quiz-images").upload(imagePath,file,{upsert:false,contentType:file.type});
+      const path=`${session.room}/${session.player}/${crypto.randomUUID()}.${ext}`;
+      const {error}=await supabase.storage.from("quiz-images").upload(path,file,{upsert:false,contentType:file.type});
       if(error) throw error;
+      return path;
     }
-    const payload={p_question_id:existing?.id||null,p_type:type,p_text:text,p_options:options,p_correct_answer:answer,p_explanation:$("qExplanation").value.trim(),p_points:points,p_image_path:imagePath};
+    imagePath=await uploadImage($("qImage").files[0]) || imagePath;
+    const optionImages=[...(existing?.option_image_paths||[])];
+    for(let i=0;i<4;i++){
+      const file=document.querySelector(`[data-option-image="${i}"]`)?.files[0];
+      if(file)optionImages[i]=await uploadImage(file);
+    }
+    while(optionImages.length<4) optionImages.push(null);
+    const payload={p_question_id:existing?.id||null,p_type:type,p_text:text,p_options:options,p_correct_answer:answer,p_explanation:$("qExplanation").value.trim(),p_points:points,p_image_path:imagePath,p_option_images:type==="single"?optionImages:[]};
     await rpc("save_question",payload);
     resetQuestionForm();await refreshAll();toast("題目已儲存。");
   }catch(err){toast(err.message||"儲存題目失敗");}
@@ -155,7 +162,7 @@ async function refreshAll(){
     rpc("list_questions",{p_room_id:session.room}),
     rpc("submission_status",{p_room_id:session.room})
   ]);
-  roomData=room;players=people||[];myQuestions=own||[];allQuestions=(questions||[]).map(q=>({...q,image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));answers=submits||[];
+  roomData=room;players=people||[];myQuestions=own||[];allQuestions=(questions||[]).map(q=>({...q,option_image_urls:(q.option_image_paths||[]).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));answers=submits||[];
   session.isHost=!!room.is_host;
   renderHome();renderMyQuestions();renderPlay();renderResults();
 }
@@ -184,12 +191,14 @@ function renderMyQuestions(){
   $("myQuestions").querySelectorAll("[data-edit]").forEach(b=>b.addEventListener("click",()=>editQuestion(b.dataset.edit)));
   $("myQuestions").querySelectorAll("[data-delete]").forEach(b=>b.addEventListener("click",()=>deleteQuestion(b.dataset.delete)));
 }
-function typeName(t){return ({single:"選擇題",boolean:"是非題",fill:"填空題",short:"簡答題",image:"圖片題"})[t]||t;}
+function typeName(t){return ({single:"選擇題",boolean:"是非題",fill:"填空題",short:"簡答題"})[t]||t;}
+function publicImageUrl(path){return path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${path}`:null;}
 function editQuestion(id){
   const q=myQuestions.find(x=>x.id===id);if(!q)return;
   $("editQuestionId").value=q.id;$("qType").value=q.type;$("qText").value=q.question_text;
   $("qOptions").value=(q.options||[]).join("\n");$("qAnswer").value=q.correct_answer;
-  renderChoiceEditor(q.type==="single"?(q.options||[]):[],q.type==="single"?q.correct_answer:"");
+  renderChoiceEditor(q.type==="single"?(q.options||[]):[],q.type==="single"?q.correct_answer:"",q.option_image_paths||[]);
+  $("currentQuestionImage").textContent=q.image_path?"已附題幹圖片；上傳新圖片可替換":"";
   if(q.type==="boolean") {const radio=document.querySelector(`input[name="qBoolean"][value="${q.correct_answer}"]`);if(radio)radio.checked=true;}
   $("qExplanation").value=q.explanation||"";$("qPoints").value=q.points;
   $("saveQuestionBtn").textContent="更新題目";$("cancelEditBtn").hidden=false;updateQuestionType();updatePointsHint();
@@ -216,7 +225,8 @@ function renderPlay(){
   $("playNotice").textContent=ready?"請回答所有題目後再交卷。":revealed?"答案已公布，作答已結束。": "主持人鎖定題庫並開放作答後，即可開始。";
   $("submitAnswersBtn").hidden=!ready||alreadySubmitted;
   const saved={...(mine?.responses||{}),...answerDraft};
-  $("playProgress").textContent=`${Object.values(saved).filter(v=>String(v||"").trim()).length} / ${allQuestions.length}`;
+  const playable=allQuestions;
+  $("playProgress").textContent=`${Object.values(saved).filter(v=>String(v||"").trim()).length} / ${playable.length}`;
   $("playQuestions").innerHTML=ready?allQuestions.map((q,i)=>renderPlayQuestion(q,i,saved[q.id])).join(""):'';
   $("playQuestions").querySelectorAll("input,textarea").forEach(el=>el.addEventListener("input",()=>saveDraftAnswer(el)));
   $("submitAnswersBtn").onclick=submitAnswers;
@@ -224,9 +234,9 @@ function renderPlay(){
 function renderPlayQuestion(q,i,answer){
   const opts=q.options||[];
   let input="";
-  if(q.type==="single"||q.type==="boolean"||(q.type==="image"&&opts.length)){
-    input=`<div class="q-options">${opts.map((o,j)=>`<label class="option"><input type="radio" name="answer-${q.id}" value="${esc(o)}" ${answer===o?'checked':''}><span>${esc(o)}</span></label>`).join("")}</div>`;
-  }else if(q.type==="fill"||q.type==="image"){
+  if(q.type==="single"||q.type==="boolean"){
+    input=`<div class="q-options">${opts.map((o,j)=>`<label class="option"><input type="radio" name="answer-${q.id}" value="${esc(o)}" ${answer===o?'checked':''}><span>${esc(o)}${q.option_image_urls?.[j]?`<img class="q-image option-image" src="${esc(q.option_image_urls[j])}" alt="選項 ${j+1} 圖片">`:""}</span></label>`).join("")}</div>`;
+  }else if(q.type==="fill"){
     input=`<div class="field"><label>你的答案</label><input data-answer-for="${q.id}" value="${esc(answer||"")}" maxlength="1000" placeholder="輸入答案"></div>`;
   }else{
     input=`<div class="field"><label>你的答案</label><textarea data-answer-for="${q.id}" rows="3" maxlength="2000" placeholder="請寫下你的回答">${esc(answer||"")}</textarea></div>`;
@@ -241,7 +251,7 @@ function saveDraftAnswer(el){
   const card=document.querySelector(`[data-qcard="${qid}"]`);
   if(el.type==="radio"){const chosen=card.querySelector("input[type=radio]:checked");answerDraft[qid]=chosen?.value??null;}
   else answerDraft[qid]=el.value;
-  $("playProgress").textContent=`${Object.values(answerDraft).filter(v=>String(v||"").trim()).length} / ${allQuestions.length}`;
+  $("playProgress").textContent=`${allQuestions.filter(q=>String(answerDraft[q.id]||"").trim()).length} / ${allQuestions.length}`;
 }
 async function submitAnswers(){
   if(!confirm("交卷後不能修改答案，確定交卷？"))return;
@@ -249,7 +259,7 @@ async function submitAnswers(){
   for(const q of allQuestions){
     const card=document.querySelector(`[data-qcard="${q.id}"]`);
     if(!card)continue;
-    if(q.type==="single"||q.type==="boolean"||(q.type==="image"&&(q.options||[]).length))responses[q.id]=card.querySelector("input[type=radio]:checked")?.value??"";
+    if(q.type==="single"||q.type==="boolean")responses[q.id]=card.querySelector("input[type=radio]:checked")?.value??"";
     else responses[q.id]=card.querySelector("[data-answer-for]")?.value?.trim()??"";
   }
   if(Object.values(responses).some(v=>v===""))return toast("還有題目未作答，請完成所有題目。");
@@ -258,17 +268,17 @@ async function submitAnswers(){
 
 function renderResults(){
   const revealed=roomData.status==="revealed";
-  $("resultsNotice").textContent=revealed?"答案已公布。由每題原出題者匿名批改簡答題；選擇、是非、填空及圖片文字題自動評分。":"所有人交卷後，由主持人公布答案。";
+  $("resultsNotice").textContent=revealed?"答案已公布。由每題原出題者批改簡答題（顯示作答者）；選擇、是非與填空題自動評分。":"所有人交卷後，由主持人公布答案。";
   $("gradingArea").innerHTML="";$("leaderboard").innerHTML="";$("answerReview").innerHTML="";
   if(!revealed)return;
   if(gradingQueue.length){
-    $("gradingArea").innerHTML=`<h3>我出的簡答題・匿名閱卷</h3><p class="muted tiny">不顯示作答者姓名或個人 ID；每一份答案由系統編號。</p><div id="manualGrades" class="question-list"></div><button id="saveGradesBtn" class="primary wide">儲存我的評分</button>`;
-    $("manualGrades").innerHTML=gradingQueue.map((g,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">${esc(g.question_text)}</span><span class="q-meta">滿分 ${g.max_points}</span></div><p><strong>匿名答案 ${i+1}：</strong>${esc(g.response)}</p><p class="muted tiny">參考答案：${esc(g.correct_answer)}</p><label>給分（0～${g.max_points}）</label><input type="number" min="0" max="${g.max_points}" step="1" data-grade-token="${esc(g.token)}" value="${g.awarded_points??""}"></article>`).join("");
+    $("gradingArea").innerHTML=`<h3>我出的簡答題・人工閱卷</h3><p class="muted tiny">僅批改其他玩家對我所出題目的答案。</p><div id="manualGrades" class="question-list"></div><button id="saveGradesBtn" class="primary wide">儲存我的評分</button>`;
+    $("manualGrades").innerHTML=gradingQueue.map((g,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">${esc(g.question_text)}</span><span class="q-meta">滿分 ${g.max_points}</span></div><p><strong>${esc(g.nickname||"未知玩家")}：</strong>${esc(g.response)}</p><p class="muted tiny">參考答案：${esc(g.correct_answer)}</p><label>給分（0～${g.max_points}）</label><input type="number" min="0" max="${g.max_points}" step="1" data-grade-token="${esc(g.token)}" value="${g.awarded_points??""}"></article>`).join("");
     $("saveGradesBtn").onclick=saveGrades;
   }
   const board=[...results].sort((a,b)=>Number(b.total)-Number(a.total));
   $("leaderboard").innerHTML=`<h3>排行榜</h3>${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（有題目待評分）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
-  $("answerReview").innerHTML=allQuestions.map((q,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:""}<div class="q-answer"><strong>標準／參考答案：</strong>${esc(q.correct_answer||"（待人工評分）")}<br>${q.explanation?`<strong>解析：</strong>${esc(q.explanation)}<br>`:""}<strong>出題者：</strong>${esc(q.author_nickname||"未知")}</div></article>`).join("");
+  $("answerReview").innerHTML=allQuestions.map((q,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:""}${(q.option_image_urls||[]).map((u,j)=>u?`<div class="tiny">選項 ${j+1}<img class="q-image option-image" src="${esc(u)}" alt="選項圖片"></div>`:"").join("")}<div class="q-answer"><strong>標準／參考答案：</strong>${esc(q.correct_answer||"（待人工評分）")}<br>${q.explanation?`<strong>解析：</strong>${esc(q.explanation)}<br>`:""}<strong>出題者：</strong>${esc(q.author_nickname||"未知")}</div></article>`).join("");
 }
 async function saveGrades(){
   const items=[];
@@ -278,7 +288,7 @@ async function saveGrades(){
     if(!Number.isInteger(points)||points<0||points>Number(el.max))return toast("分數必須是 0 到滿分的整數。");
     items.push({token:el.dataset.gradeToken,points});
   }
-  try {await rpc("save_anonymous_grades",{p_room_id:session.room,p_grades:items});await refreshAll();toast("匿名評分已儲存。");}catch(e){toast(e.message||"儲存失敗");}
+  try {await rpc("save_anonymous_grades",{p_room_id:session.room,p_grades:items});await refreshAll();toast("人工評分已儲存。");}catch(e){toast(e.message||"儲存失敗");}
 }
 
 async function loadResults(){
@@ -286,7 +296,7 @@ async function loadResults(){
     results=await rpc("get_results",{p_room_id:session.room});
     gradingQueue=await rpc("get_grading_queue",{p_room_id:session.room});
     const reviewed=await rpc("list_questions",{p_room_id:session.room,p_include_answers:true});
-    allQuestions=(reviewed||allQuestions).map(q=>({...q,image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));
+    allQuestions=(reviewed||allQuestions).map(q=>({...q,option_image_urls:(q.option_image_paths||[]).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));
   }else {results=[];gradingQueue=[];}
 }
 const originalRefresh=refreshAll;
