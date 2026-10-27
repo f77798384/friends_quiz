@@ -8,6 +8,7 @@ const supabase = configured ? createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_K
 let session = { room: null, player: null, isHost: false };
 let roomData = null, players = [], myQuestions = [], allQuestions = [], answers = [], results = [];
 let currentView = "home", busy = false;
+let gradingQueue = [];
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm = (s) => String(s ?? "").trim().toLocaleLowerCase("zh-TW");
@@ -75,28 +76,51 @@ $("joinBtn").addEventListener("click",()=>joinRoom(false));
 $("createBtn").addEventListener("click",()=>joinRoom(true));
 $("leaveBtn").addEventListener("click",()=>{session={room:null,player:null,isHost:false};$("app").hidden=true;$("setup").hidden=false;status("已離開");});
 $("qType").addEventListener("change",updateQuestionType);
+function renderChoiceEditor(values=[] , selected="") {
+  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<label class="choice-editor"><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}><span>${String.fromCharCode(65+i)}.</span><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc(values[i]||"")}"></label>`).join("");
+}
+function updatePointsHint(){
+  const editing=$("editQuestionId").value;
+  const other=myQuestions.filter(q=>q.id!==editing);
+  const remaining=10-(other.length+1);
+  const used=other.reduce((sum,q)=>sum+Number(q.points),0);
+  const max=100-used-remaining;
+  if(!editing && other.length===9) $("qPoints").value=100-used;
+  $("pointsHint").textContent=`其他題已配 ${used} 分；這題可配 1～${max} 分${remaining===0?"（最後一題自動補至 100 分）":"，並為未來每題保留至少 1 分"}。`;
+  $("qPoints").max=Math.max(1,max);
+}
+$("qPoints").addEventListener("input",updatePointsHint);
 function updateQuestionType(){
   const t=$("qType").value;
-  $("optionsField").hidden=!(t==="single"||t==="boolean"||t==="image");
+  $("optionsField").hidden=t!=="single";
+  $("booleanField").hidden=t!=="boolean";
+  $("answerField").hidden=t==="single"||t==="boolean";
   $("imageField").hidden=t!=="image";
-  if(t==="boolean") $("qOptions").value="是\n否";
-  else if(t==="single" && $("qOptions").value==="是\n否") $("qOptions").value="";
+  if(t==="single" && !$("singleOptions").children.length) renderChoiceEditor();
 }
 function resetQuestionForm(){
-  $("editQuestionId").value="";$("questionForm").reset();$("qPoints").value=1;
-  $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();
+  $("editQuestionId").value="";$("questionForm").reset();$("qPoints").value=10;$("singleOptions").innerHTML="";renderChoiceEditor();
+  $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();
 }
 $("cancelEditBtn").addEventListener("click",resetQuestionForm);
 $("questionForm").addEventListener("submit",async e=>{
   e.preventDefault();
   if(!roomData || roomData.status!=="draft") return toast("題庫已鎖定，不能修改。");
-  const type=$("qType").value, text=$("qText").value.trim(), answer=$("qAnswer").value.trim();
-  const options=$("qOptions").value.split("\n").map(x=>x.trim()).filter(Boolean);
-  const points=Number($("qPoints").value);
+  const type=$("qType").value, text=$("qText").value.trim();
+  const options=type==="single"?[...document.querySelectorAll(".q-choice-text")].map(x=>x.value.trim()):type==="boolean"?["是","否"]:[];
+  const selected=document.querySelector('input[name="qSingleCorrect"]:checked');
+  const answer=type==="single" ? (selected?options[Number(selected.value)]:"") : type==="boolean" ? (document.querySelector('input[name="qBoolean"]:checked')?.value||"") : $("qAnswer").value.trim();
+  const editing=$("editQuestionId").value;
+  const other=myQuestions.filter(q=>q.id!==editing);
+  const used=other.reduce((v,q)=>v+Number(q.points),0);
+  const remaining=10-other.length-1;
+  const points=other.length===9?100-used:Number($("qPoints").value);
   if(!text) return toast("請輸入題目。");
   if(!answer) return toast("請填寫標準答案。");
   if(!Number.isInteger(points)||points<1||points>100) return toast("配分需為 1～100 的整數。");
-  if(type==="single" && (options.length<2||options.length>6)) return toast("選擇題需有 2～6 個選項。");
+  if(type==="single" && (options.length!==4||options.some(o=>!o)||new Set(options).size!==4)) return toast("選擇題必須填寫四個不同的選項。");
+  if(used+points+remaining>100) return toast(`配分過高！還有 ${remaining} 題必須各保留至少 1 分。`);
+  if(remaining===0 && used+points!==100) return toast("第 10 題必須補足至 100 分。");
   if(type==="boolean" && !["true","false","是","否"].includes(answer.toLowerCase())) return toast("是非題答案請填 true、false、是或否。");
   if(type==="image" && !$("qImage").files[0] && !$("editQuestionId").value) return toast("圖片題請選擇一張圖片。");
   if(type==="single" && !options.includes(answer)) return toast("選擇題的答案必須完全符合其中一個選項。");
@@ -131,7 +155,7 @@ async function refreshAll(){
     rpc("list_questions",{p_room_id:session.room}),
     rpc("submission_status",{p_room_id:session.room})
   ]);
-  roomData=room;players=people||[];myQuestions=own||[];allQuestions=questions||[];answers=submits||[];
+  roomData=room;players=people||[];myQuestions=own||[];allQuestions=(questions||[]).map(q=>({...q,image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));answers=submits||[];
   session.isHost=!!room.is_host;
   renderHome();renderMyQuestions();renderPlay();renderResults();
 }
@@ -147,7 +171,8 @@ function renderHome(){
   $("membersList").innerHTML=players.map(p=>`<li>${esc(p.nickname)}${p.is_host?' <strong>· 主持人</strong>':''}${p.question_count!==undefined?`<br><span class="muted tiny">已出題 ${p.question_count}/10</span>`:''}${p.submitted?' <span class="tiny">· 已交卷</span>':''}</li>`).join("");
 }
 function renderMyQuestions(){
-  $("myQuestionCount").textContent=`${myQuestions.length} / 10`;
+  $("myQuestionCount").textContent=`${myQuestions.length} / 10（${myQuestions.reduce((sum,q)=>sum+Number(q.points),0)} 分）`;
+  updatePointsHint();
   $("authorLocked").hidden=roomData.status==="draft";
   $("questionForm").hidden=roomData.status!=="draft";
   $("myQuestions").innerHTML=myQuestions.map((q,i)=>`<article class="q-card">
@@ -164,8 +189,10 @@ function editQuestion(id){
   const q=myQuestions.find(x=>x.id===id);if(!q)return;
   $("editQuestionId").value=q.id;$("qType").value=q.type;$("qText").value=q.question_text;
   $("qOptions").value=(q.options||[]).join("\n");$("qAnswer").value=q.correct_answer;
+  renderChoiceEditor(q.type==="single"?(q.options||[]):[],q.type==="single"?q.correct_answer:"");
+  if(q.type==="boolean") {const radio=document.querySelector(`input[name="qBoolean"][value="${q.correct_answer}"]`);if(radio)radio.checked=true;}
   $("qExplanation").value=q.explanation||"";$("qPoints").value=q.points;
-  $("saveQuestionBtn").textContent="更新題目";$("cancelEditBtn").hidden=false;updateQuestionType();
+  $("saveQuestionBtn").textContent="更新題目";$("cancelEditBtn").hidden=false;updateQuestionType();updatePointsHint();
   window.scrollTo({top:$("questionForm").getBoundingClientRect().top+window.scrollY-20,behavior:"smooth"});
 }
 async function deleteQuestion(id){
@@ -185,21 +212,21 @@ $("revealBtn").addEventListener("click",async()=>{
 
 function renderPlay(){
   const ready=roomData.status==="locked", revealed=roomData.status==="revealed";
+  const mine=answers.find(a=>a.player_id===session.player);const alreadySubmitted=!!mine?.submitted;
   $("playNotice").textContent=ready?"請回答所有題目後再交卷。":revealed?"答案已公布，作答已結束。": "主持人鎖定題庫並開放作答後，即可開始。";
-  $("submitAnswersBtn").hidden=!ready||answers.some(a=>a.player_id===session.player&&a.submitted);
-  const mine=answers.find(a=>a.player_id===session.player);
-  const saved=mine?.responses||{};
-  $("playProgress").textContent=`${Object.keys(saved).length} / ${allQuestions.length}`;
+  $("submitAnswersBtn").hidden=!ready||alreadySubmitted;
+  const saved={...(mine?.responses||{}),...answerDraft};
+  $("playProgress").textContent=`${Object.values(saved).filter(v=>String(v||"").trim()).length} / ${allQuestions.length}`;
   $("playQuestions").innerHTML=ready?allQuestions.map((q,i)=>renderPlayQuestion(q,i,saved[q.id])).join(""):'';
-  $("playQuestions").querySelectorAll("input,textarea").forEach(el=>el.addEventListener("change",()=>saveDraftAnswer(el)));
+  $("playQuestions").querySelectorAll("input,textarea").forEach(el=>el.addEventListener("input",()=>saveDraftAnswer(el)));
   $("submitAnswersBtn").onclick=submitAnswers;
 }
 function renderPlayQuestion(q,i,answer){
   const opts=q.options||[];
   let input="";
-  if(q.type==="single"||q.type==="boolean"||q.type==="image"){
+  if(q.type==="single"||q.type==="boolean"||(q.type==="image"&&opts.length)){
     input=`<div class="q-options">${opts.map((o,j)=>`<label class="option"><input type="radio" name="answer-${q.id}" value="${esc(o)}" ${answer===o?'checked':''}><span>${esc(o)}</span></label>`).join("")}</div>`;
-  }else if(q.type==="fill"){
+  }else if(q.type==="fill"||q.type==="image"){
     input=`<div class="field"><label>你的答案</label><input data-answer-for="${q.id}" value="${esc(answer||"")}" maxlength="1000" placeholder="輸入答案"></div>`;
   }else{
     input=`<div class="field"><label>你的答案</label><textarea data-answer-for="${q.id}" rows="3" maxlength="2000" placeholder="請寫下你的回答">${esc(answer||"")}</textarea></div>`;
@@ -214,6 +241,7 @@ function saveDraftAnswer(el){
   const card=document.querySelector(`[data-qcard="${qid}"]`);
   if(el.type==="radio"){const chosen=card.querySelector("input[type=radio]:checked");answerDraft[qid]=chosen?.value??null;}
   else answerDraft[qid]=el.value;
+  $("playProgress").textContent=`${Object.values(answerDraft).filter(v=>String(v||"").trim()).length} / ${allQuestions.length}`;
 }
 async function submitAnswers(){
   if(!confirm("交卷後不能修改答案，確定交卷？"))return;
@@ -221,7 +249,7 @@ async function submitAnswers(){
   for(const q of allQuestions){
     const card=document.querySelector(`[data-qcard="${q.id}"]`);
     if(!card)continue;
-    if(q.type==="single"||q.type==="boolean"||q.type==="image")responses[q.id]=card.querySelector("input[type=radio]:checked")?.value??"";
+    if(q.type==="single"||q.type==="boolean"||(q.type==="image"&&(q.options||[]).length))responses[q.id]=card.querySelector("input[type=radio]:checked")?.value??"";
     else responses[q.id]=card.querySelector("[data-answer-for]")?.value?.trim()??"";
   }
   if(Object.values(responses).some(v=>v===""))return toast("還有題目未作答，請完成所有題目。");
@@ -230,48 +258,36 @@ async function submitAnswers(){
 
 function renderResults(){
   const revealed=roomData.status==="revealed";
-  $("resultsNotice").textContent=revealed?"答案已公布。簡答題需要主持人評分；其他題型由系統批改。": "所有人交卷後，由主持人公布答案。";
-  $("gradingArea").innerHTML="";
-  $("leaderboard").innerHTML="";
-  $("answerReview").innerHTML="";
+  $("resultsNotice").textContent=revealed?"答案已公布。由每題原出題者匿名批改簡答題；選擇、是非、填空及圖片文字題自動評分。":"所有人交卷後，由主持人公布答案。";
+  $("gradingArea").innerHTML="";$("leaderboard").innerHTML="";$("answerReview").innerHTML="";
   if(!revealed)return;
-  const grades=results;
-  if(session.isHost){
-    $("gradingArea").innerHTML=`<h3>簡答題人工評分</h3><div id="manualGrades" class="question-list"></div><button id="saveGradesBtn" class="primary wide">儲存人工評分並更新排名</button>`;
-    const shorts=allQuestions.filter(q=>q.type==="short");
-    $("manualGrades").innerHTML=shorts.map(q=>{
-      const submissions=answers.filter(a=>a.submitted);
-      return submissions.map(a=>{
-        const resp=a.responses?.[q.id]||"";
-        const current=grades.find(g=>g.player_id===a.player_id&&g.question_id===q.id)?.awarded_points??"";
-        return `<article class="q-card"><div class="q-top"><span class="q-number">${esc(q.question_text)}</span><span class="q-meta">${q.points} 分滿分</span></div><p><strong>${esc(a.nickname||"參加者")}</strong>：${esc(resp)}</p><label>給分（0～${q.points}）</label><input type="number" min="0" max="${q.points}" step="1" data-grade-q="${q.id}" data-grade-p="${a.player_id}" value="${current}"></article>`;
-      }).join("");
-    }).join("")||'<p class="muted">沒有簡答題需要人工評分。</p>';
+  if(gradingQueue.length){
+    $("gradingArea").innerHTML=`<h3>我出的簡答題・匿名閱卷</h3><p class="muted tiny">不顯示作答者姓名或個人 ID；每一份答案由系統編號。</p><div id="manualGrades" class="question-list"></div><button id="saveGradesBtn" class="primary wide">儲存我的評分</button>`;
+    $("manualGrades").innerHTML=gradingQueue.map((g,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">${esc(g.question_text)}</span><span class="q-meta">滿分 ${g.max_points}</span></div><p><strong>匿名答案 ${i+1}：</strong>${esc(g.response)}</p><p class="muted tiny">參考答案：${esc(g.correct_answer)}</p><label>給分（0～${g.max_points}）</label><input type="number" min="0" max="${g.max_points}" step="1" data-grade-token="${esc(g.token)}" value="${g.awarded_points??""}"></article>`).join("");
     $("saveGradesBtn").onclick=saveGrades;
   }
-  const leaderboard=grades.reduce((acc,g)=>{let row=acc.find(x=>x.player_id===g.player_id);if(!row){row={player_id:g.player_id,nickname:g.nickname,total:0,max:0,pending:false};acc.push(row);}row.total+=Number(g.awarded_points||0);row.max+=Number(g.max_points||0);row.pending=row.pending||g.pending_manual;return acc;},[]);
-  leaderboard.sort((a,b)=>b.total-a.total);
-  $("leaderboard").innerHTML=`<h3>排行榜</h3>${leaderboard.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（簡答待評）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
-  $("answerReview").innerHTML=allQuestions.map((q,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:""}<div class="q-answer"><strong>正確答案：</strong>${esc(q.correct_answer||"（待人工評分）")}<br>${q.explanation?`<strong>解析：</strong>${esc(q.explanation)}<br>`:""}<strong>出題者：</strong>${esc(q.author_nickname||"未知")}</div></article>`).join("");
+  const board=[...results].sort((a,b)=>Number(b.total)-Number(a.total));
+  $("leaderboard").innerHTML=`<h3>排行榜</h3>${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（有題目待評分）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
+  $("answerReview").innerHTML=allQuestions.map((q,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:""}<div class="q-answer"><strong>標準／參考答案：</strong>${esc(q.correct_answer||"（待人工評分）")}<br>${q.explanation?`<strong>解析：</strong>${esc(q.explanation)}<br>`:""}<strong>出題者：</strong>${esc(q.author_nickname||"未知")}</div></article>`).join("");
 }
 async function saveGrades(){
-  const fields=[...document.querySelectorAll("[data-grade-q]")];
-  const gradesToSave=[];
-  for(const f of fields){
-    if(f.value==="")continue;
-    const n=Number(f.value),max=Number(f.max);
-    if(!Number.isInteger(n)||n<0||n>max)return toast("請檢查人工評分，分數需為整數且不可超過滿分。");
-    gradesToSave.push({question_id:f.dataset.gradeQ,player_id:f.dataset.gradeP,points:n});
+  const items=[];
+  for(const el of document.querySelectorAll("[data-grade-token]")){
+    if(el.value==="")continue;
+    const points=Number(el.value);
+    if(!Number.isInteger(points)||points<0||points>Number(el.max))return toast("分數必須是 0 到滿分的整數。");
+    items.push({token:el.dataset.gradeToken,points});
   }
-  try{await rpc("save_manual_grades",{p_room_id:session.room,p_grades:gradesToSave});await refreshAll();toast("評分已儲存。");}catch(e){toast(e.message||"儲存失敗");}
+  try {await rpc("save_anonymous_grades",{p_room_id:session.room,p_grades:items});await refreshAll();toast("匿名評分已儲存。");}catch(e){toast(e.message||"儲存失敗");}
 }
 
 async function loadResults(){
   if(roomData?.status==="revealed"){
     results=await rpc("get_results",{p_room_id:session.room});
+    gradingQueue=await rpc("get_grading_queue",{p_room_id:session.room});
     const reviewed=await rpc("list_questions",{p_room_id:session.room,p_include_answers:true});
-    allQuestions=reviewed||allQuestions;
-  }else results=[];
+    allQuestions=(reviewed||allQuestions).map(q=>({...q,image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));
+  }else {results=[];gradingQueue=[];}
 }
 const originalRefresh=refreshAll;
 refreshAll=async function(){
