@@ -96,11 +96,12 @@
             <textarea id="qText" rows="3" maxlength="1200" required placeholder="輸入題目…"></textarea>
           </div>
           <div id="optionsField" class="field">
-            <label>選項（每行一個，選擇題需 2～6 個）</label>
-            <textarea id="qOptions" rows="4" placeholder="選項 A&#10;選項 B&#10;選項 C&#10;選項 D"></textarea>
+            <label>四個選項（點選左側圓鈕設定標準答案）</label>
+            <div id="singleOptions"></div><textarea id="qOptions" hidden></textarea>
           </div>
-          <div class="field">
-            <label for="qAnswer">標準答案／正確選項</label>
+          <div id="booleanField" class="field" hidden><label>標準答案</label><div class="answer-choices"><label><input type="radio" name="qBoolean" value="是" checked> 是</label><label><input type="radio" name="qBoolean" value="否"> 否</label></div></div>
+          <div id="answerField" class="field">
+            <label for="qAnswer">標準答案／參考答案</label>
             <input id="qAnswer" maxlength="1000" placeholder="例如：選項 A；是非題填 true 或 false">
             <p class="tiny muted">簡答題請填參考答案；填空題可用 | 分隔可接受答案，例如：台北|臺北。</p>
           </div>
@@ -110,8 +111,9 @@
           </div>
           <div class="field">
             <label for="qPoints">配分</label>
-            <input id="qPoints" type="number" min="1" max="100" value="1" required>
+            <input id="qPoints" type="number" min="1" max="100" value="10" required>
           </div>
+          <p id="pointsHint" class="tiny muted"></p>
           <div id="imageField" class="field" hidden>
             <label for="qImage">題目圖片（JPG、PNG、WebP，最大 5 MB）</label>
             <input id="qImage" type="file" accept="image/jpeg,image/png,image/webp">
