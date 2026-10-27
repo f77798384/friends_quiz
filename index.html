@@ -88,7 +88,6 @@
               <option value="boolean">是非題</option>
               <option value="fill">填空題</option>
               <option value="short">簡答題（人工評分）</option>
-              <option value="image">圖片題</option>
             </select>
           </div>
           <div class="field">
@@ -114,9 +113,10 @@
             <input id="qPoints" type="number" min="1" max="100" value="10" required>
           </div>
           <p id="pointsHint" class="tiny muted"></p>
-          <div id="imageField" class="field" hidden>
-            <label for="qImage">題目圖片（JPG、PNG、WebP，最大 5 MB）</label>
+          <div id="imageField" class="field">
+            <label for="qImage">題幹附圖（選填，JPG、PNG、WebP，最大 5 MB）</label>
             <input id="qImage" type="file" accept="image/jpeg,image/png,image/webp">
+            <div id="currentQuestionImage" class="tiny muted"></div>
           </div>
           <div class="button-row">
             <button id="saveQuestionBtn" class="primary" type="submit">儲存題目</button>
