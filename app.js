@@ -9,6 +9,26 @@ let session = { room: null, player: null, isHost: false };
 let roomData = null, players = [], myQuestions = [], allQuestions = [], answers = [], results = [];
 let currentView = "home", busy = false;
 let gradingQueue = [];
+const SESSION_KEY="friends_quiz_tab_v4";
+function saveTabSession(){try{sessionStorage.setItem(SESSION_KEY,JSON.stringify({room:session.room,player:session.player,isHost:session.isHost,code:$("roomCode").value,nickname:$("nickname").value,view:currentView}));}catch{}}
+function clearTabSession(){try{sessionStorage.removeItem(SESSION_KEY);}catch{}}
+function resetToSetup(message="已離開房間"){
+  clearTabSession();session={room:null,player:null,isHost:false};roomData=null;players=[];
+  $("app").hidden=true;$("setup").hidden=false;status(message);
+}
+async function restoreTabSession(){
+  let saved;try{saved=JSON.parse(sessionStorage.getItem(SESSION_KEY)||"null");}catch{clearTabSession();return;}
+  if(!saved?.room||!saved?.player)return;
+  session={room:saved.room,player:saved.player,isHost:!!saved.isHost};
+  $("roomCode").value=saved.code||"";$("nickname").value=saved.nickname||"";
+  try{
+    await refreshAll();
+    $("setup").hidden=true;$("app").hidden=false;
+    $("roomLabel").textContent=roomData.code||saved.code;
+    $("playerLabel").textContent=(saved.nickname||players.find(p=>p.id===session.player)?.nickname||"玩家")+(session.isHost?"（主持人）":"");
+    status("已恢復房間");switchView(["home","author","play","results"].includes(saved.view)?saved.view:"home");
+  }catch(e){resetToSetup("原房間已失效，請重新加入");toast(e.message||"無法恢復房間");}
+}
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm = (s) => String(s ?? "").trim().toLocaleLowerCase("zh-TW");
@@ -19,6 +39,7 @@ function randomCode(){return Math.random().toString(36).slice(2,8).toUpperCase()
 function validPin(pin){return /^\d{4,8}$/.test(pin);}
 function switchView(view){
   currentView=view;
+  if(session.player)saveTabSession();
   document.querySelectorAll(".view").forEach(v=>v.hidden=true);
   $("view-"+view).hidden=false;
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===view));
@@ -26,7 +47,7 @@ function switchView(view){
 }
 document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
 $("configNotice").textContent = configured ? "已設定 Supabase 連線資訊，準備連線。" : "請先編輯 config.js，填入 Supabase URL 與 anon key。";
-if(configured) status("已設定連線"); else status("未設定");
+if(configured) {status("已設定連線");restoreTabSession();} else status("未設定");
 
 async function rpc(name,args={}) {
   if(!supabase) throw new Error("尚未設定 Supabase。請先編輯 config.js。");
@@ -67,6 +88,7 @@ async function joinRoom(create=false){
     $("roomLabel").textContent=roomCode;
     $("playerLabel").textContent=nickname+(session.isHost?"（主持人）":"");
     status("已連線");
+    saveTabSession();
     await refreshAll();
     switchView("home");
   }catch(e){toast(e.message||"無法加入房間");}
@@ -74,7 +96,7 @@ async function joinRoom(create=false){
 }
 $("joinBtn").addEventListener("click",()=>joinRoom(false));
 $("createBtn").addEventListener("click",()=>joinRoom(true));
-$("leaveBtn").addEventListener("click",()=>{session={room:null,player:null,isHost:false};$("app").hidden=true;$("setup").hidden=false;status("已離開");});
+$("leaveBtn").addEventListener("click",()=>resetToSetup());
 $("qType").addEventListener("change",updateQuestionType);
 function renderChoiceEditor(values=[] , selected="", images=[]) {
   const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc(values[i]||"")}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?"已附圖片；上傳新圖片可替換":""}</span></div>`).join("");
@@ -97,10 +119,11 @@ function updateQuestionType(){
   $("answerField").hidden=t==="single"||t==="boolean";
   $("imageField").hidden=false;
   if(t==="single" && !$("singleOptions").children.length) renderChoiceEditor();
+  updateQuestionPreview();
 }
 function resetQuestionForm(){
   $("editQuestionId").value="";$("questionForm").reset();$("qPoints").value=10;$("singleOptions").innerHTML="";renderChoiceEditor();$("currentQuestionImage").textContent="";
-  $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();
+  $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();updateQuestionPreview();
 }
 $("cancelEditBtn").addEventListener("click",resetQuestionForm);
 $("questionForm").addEventListener("submit",async e=>{
@@ -175,7 +198,12 @@ function renderHome(){
   $("hostControls").hidden=!session.isHost;
   $("lockBtn").hidden=!session.isHost||roomData.status!=="draft";
   $("revealBtn").hidden=!session.isHost||roomData.status!=="locked";
-  $("membersList").innerHTML=players.map(p=>`<li>${esc(p.nickname)}${p.is_host?' <strong>· 主持人</strong>':''}${p.question_count!==undefined?`<br><span class="muted tiny">已出題 ${p.question_count}/10</span>`:''}${p.submitted?' <span class="tiny">· 已交卷</span>':''}</li>`).join("");
+  $("membersList").innerHTML=players.map(p=>`<li class="member-row"><span>${esc(p.nickname)}${p.is_host?' <strong>· 主持人</strong>':''}${p.question_count!==undefined?`<br><span class="muted tiny">已出題 ${p.question_count}/10</span>`:''}${p.submitted?' <span class="tiny">· 已交卷</span>':''}</span>${session.isHost && !p.is_host && roomData.status==="draft"?`<button type="button" class="small danger" data-kick="${esc(p.id)}">剔除</button>`:""}</li>`).join("");
+  $("membersList").querySelectorAll("[data-kick]").forEach(b=>b.addEventListener("click",async()=>{
+    const target=players.find(p=>p.id===b.dataset.kick);
+    if(!target||!confirm(`確定剔除 ${target.nickname}？對方的題目也會刪除，且只有在出題階段可以剔除。`))return;
+    try{await rpc("kick_player",{p_target_player_id:target.id});await refreshAll();toast("已剔除參加者");}catch(e){toast(e.message||"無法剔除");}
+  }));
 }
 function renderMyQuestions(){
   $("myQuestionCount").textContent=`${myQuestions.length} / 10（${myQuestions.reduce((sum,q)=>sum+Number(q.points),0)} 分）`;
@@ -201,7 +229,7 @@ function editQuestion(id){
   $("currentQuestionImage").textContent=q.image_path?"已附題幹圖片；上傳新圖片可替換":"";
   if(q.type==="boolean") {const radio=document.querySelector(`input[name="qBoolean"][value="${q.correct_answer}"]`);if(radio)radio.checked=true;}
   $("qExplanation").value=q.explanation||"";$("qPoints").value=q.points;
-  $("saveQuestionBtn").textContent="更新題目";$("cancelEditBtn").hidden=false;updateQuestionType();updatePointsHint();
+  $("saveQuestionBtn").textContent="更新題目";$("cancelEditBtn").hidden=false;updateQuestionType();updatePointsHint();updateQuestionPreview();
   window.scrollTo({top:$("questionForm").getBoundingClientRect().top+window.scrollY-20,behavior:"smooth"});
 }
 async function deleteQuestion(id){
@@ -305,3 +333,35 @@ refreshAll=async function(){
   await loadResults();
   renderResults();
 };
+
+// 出題介面啟動時就依預設選擇題建立四個選項，而不是等使用者切換題型。
+let previewImageUrls=[];
+function updateQuestionPreview(){
+  const box=$("questionPreview");if(!box)return;
+  previewImageUrls.forEach(url=>URL.revokeObjectURL(url));previewImageUrls=[];
+  const img=(fileInput,existingPath,alt)=>{
+    const file=fileInput?.files?.[0];let url=file?URL.createObjectURL(file):publicImageUrl(existingPath);
+    if(file)previewImageUrls.push(url);
+    return url?`<img class="q-image" src="${esc(url)}" alt="${esc(alt)}">`:"";
+  };
+  const t=$("qType").value;
+  const existing=myQuestions.find(q=>q.id===$("editQuestionId").value);
+  const title=esc($("qText").value.trim()||"（請輸入題目內容）");
+  let inputs="";
+  if(t==="single"){
+    inputs='<div class="q-options">'+[...document.querySelectorAll(".q-choice-text")].map((el,i)=>{
+      const checked=document.querySelector('input[name="qSingleCorrect"]:checked')?.value===String(i);
+      return `<label class="option"><input type="radio" disabled ${checked?"checked":""}><span>${esc(el.value.trim()||`選項 ${String.fromCharCode(65+i)}`)}${img(document.querySelector(`[data-option-image="${i}"]`),existing?.option_image_paths?.[i],"選項圖片")}</span></label>`;
+    }).join("")+"</div>";
+  }else if(t==="boolean")inputs=`<div class="q-options"><label class="option"><input type="radio" disabled> 是</label><label class="option"><input type="radio" disabled> 否</label></div>`;
+  else inputs='<input placeholder="作答時在這裡輸入答案" disabled>';
+  box.innerHTML=`<article class="q-card"><div class="q-top"><span class="q-number">題目預覽</span><span class="q-meta">${typeName(t)} · ${esc($("qPoints").value||10)} 分</span></div><div class="q-title">${title}</div>${img($("qImage"),existing?.image_path,"題幹圖片")}${inputs}</article>`;
+}
+$("questionForm").addEventListener("input",updateQuestionPreview);
+$("questionForm").addEventListener("change",updateQuestionPreview);
+$("previewQuestionBtn").addEventListener("click",()=>{
+  updateQuestionPreview();$("questionPreview").hidden=false;
+  $("questionPreview").scrollIntoView({behavior:"smooth",block:"nearest"});
+});
+updateQuestionPreview();
+resetQuestionForm();
