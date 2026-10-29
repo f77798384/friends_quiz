@@ -104,8 +104,12 @@ $("createBtn").addEventListener("click",()=>joinRoom(true));
 $("leaveBtn").addEventListener("click",()=>resetToSetup());
 $("qType").addEventListener("change",updateQuestionType);
 function normalizeImagePaths(value){
-  if(Array.isArray(value)) return value.map(x=>typeof x==="string"&&x.trim()?x:null);
-  if(typeof value==="string") {try {const parsed=JSON.parse(value);return normalizeImagePaths(parsed);}catch {return [];}}
+  if(Array.isArray(value)) return value.map(x=>typeof x==="string"&&x.trim()?x.trim():null);
+  if(value && typeof value==="object") return [0,1,2,3].map((i)=>{
+    const v=value[i]??value[String.fromCharCode(65+i)]??value[String.fromCharCode(97+i)];
+    return typeof v==="string"&&v.trim()?v.trim():null;
+  });
+  if(typeof value==="string") {try {return normalizeImagePaths(JSON.parse(value));}catch {return [];}}
   return [];
 }
 function normalizeOwnedQuestion(q){
@@ -113,7 +117,7 @@ function normalizeOwnedQuestion(q){
 }
 function renderChoiceEditor(values=[] , selected="", images=[]) {
   images=normalizeImagePaths(images);
-  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc((values[i]||"").startsWith("__FQ_IMAGE_ONLY_")?"":(values[i]||""))}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?`<img class="q-image option-image" src="${esc(publicImageUrl(images[i]))}" alt="已儲存的選項 ${i+1} 圖片"><span>已附圖片；選擇新檔可替換</span>`:""}</span></div>`).join("");
+  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc((values[i]||"").startsWith("__FQ_IMAGE_ONLY_")?"":(values[i]||""))}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted" data-existing-image="${i}">${images[i]?`<img class="q-image option-image" src="${esc(publicImageUrl(images[i]))}" alt="已儲存的選項 ${i+1} 圖片" data-image-check="${i}"><span>已附圖片；選擇新檔可替換</span>`:""}</span></div>`).join("");
 }
 function updatePointsHint(){
   const editing=$("editQuestionId").value;
@@ -267,6 +271,21 @@ function editQuestion(id){
   if(q.type==="fill"||q.type==="short")textAnswersByType[q.type]=q.correct_answer?.startsWith("__FQ_IMAGE_ONLY_")?"":q.correct_answer||"";
   $("qOptions").value=(q.options||[]).join("\n");$("qAnswer").value=q.correct_answer?.startsWith("__FQ_IMAGE_ONLY_")?"":q.correct_answer||"";
   renderChoiceEditor(q.type==="single"?(q.options||[]):[],q.type==="single"?q.correct_answer:"",q.type==="single"?q.option_image_paths||[]:[]);
+  if(q.type==="single") {
+    const paths=normalizeImagePaths(q.option_image_paths);
+    (q.options||[]).forEach((opt,i)=>{
+      if(String(opt||"").startsWith("__FQ_IMAGE_ONLY_") && !paths[i]) {
+        const label=document.querySelector(`[data-existing-image="${i}"]`);
+        if(label)label.textContent="此選項的圖片路徑未儲存／未回傳，需重新上傳；請先檢查資料庫。";
+      }
+    });
+    const missing=paths.map((path,i)=>!path?String.fromCharCode(65+i):null).filter(Boolean);
+    if(missing.length) console.warn("選項圖片路徑未回傳或尚未儲存",{question_id:q.id,missing_options:missing,raw_value:q.option_image_paths});
+    document.querySelectorAll("[data-image-check]").forEach(img=>img.addEventListener("error",()=>{
+      const label=img.closest("[data-existing-image]");
+      if(label)label.insertAdjacentHTML("beforeend",'<strong class="tiny">圖片網址無法載入，請確認 Storage 路徑與存取權限</strong>');
+    }));
+  }
   $("currentQuestionImage").innerHTML=q.image_path?`<img class="q-image" src="${esc(publicImageUrl(q.image_path))}" alt="已儲存的題幹圖片"><span>已附題幹圖片；選擇新檔可替換</span>`:"";
   if(q.type==="boolean") {const radio=document.querySelector(`input[name="qBoolean"][value="${q.correct_answer}"]`);if(radio)radio.checked=true;}
   $("qExplanation").value=q.explanation||"";$("qPoints").value=q.points;
