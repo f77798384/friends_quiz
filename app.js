@@ -103,7 +103,16 @@ $("joinBtn").addEventListener("click",()=>joinRoom(false));
 $("createBtn").addEventListener("click",()=>joinRoom(true));
 $("leaveBtn").addEventListener("click",()=>resetToSetup());
 $("qType").addEventListener("change",updateQuestionType);
+function normalizeImagePaths(value){
+  if(Array.isArray(value)) return value.map(x=>typeof x==="string"&&x.trim()?x:null);
+  if(typeof value==="string") {try {const parsed=JSON.parse(value);return normalizeImagePaths(parsed);}catch {return [];}}
+  return [];
+}
+function normalizeOwnedQuestion(q){
+  return {...q,option_image_paths:normalizeImagePaths(q.option_image_paths)};
+}
 function renderChoiceEditor(values=[] , selected="", images=[]) {
+  images=normalizeImagePaths(images);
   const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc((values[i]||"").startsWith("__FQ_IMAGE_ONLY_")?"":(values[i]||""))}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?`<img class="q-image option-image" src="${esc(publicImageUrl(images[i]))}" alt="已儲存的選項 ${i+1} 圖片"><span>已附圖片；選擇新檔可替換</span>`:""}</span></div>`).join("");
 }
 function updatePointsHint(){
@@ -189,7 +198,7 @@ $("questionForm").addEventListener("submit",async e=>{
       return path;
     }
     imagePath=await uploadImage($("qImage").files[0]) || imagePath;
-    const optionImages=type==="single" && existing?.type==="single"?[...(existing?.option_image_paths||[])]:[];
+    const optionImages=type==="single" && existing?.type==="single"?[...normalizeImagePaths(existing?.option_image_paths)]:[];
     for(let i=0;i<4;i++){
       const file=document.querySelector(`[data-option-image="${i}"]`)?.files[0];
       if(file)optionImages[i]=await uploadImage(file);
@@ -211,7 +220,7 @@ async function refreshAll(){
     rpc("list_questions",{p_room_id:session.room}),
     rpc("submission_status",{p_room_id:session.room})
   ]);
-  roomData=room;players=people||[];myQuestions=own||[];allQuestions=(questions||[]).map(q=>({...q,option_image_urls:(q.option_image_paths||[]).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));answers=submits||[];
+  roomData=room;players=people||[];myQuestions=(own||[]).map(normalizeOwnedQuestion);allQuestions=(questions||[]).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));answers=submits||[];
   session.isHost=!!room.is_host;
   renderHome();renderMyQuestions();renderPlay();renderResults();
 }
@@ -246,7 +255,11 @@ function renderMyQuestions(){
   $("myQuestions").querySelectorAll("[data-delete]").forEach(b=>b.addEventListener("click",()=>deleteQuestion(b.dataset.delete)));
 }
 function typeName(t){return ({single:"選擇題",boolean:"是非題",fill:"填空題",short:"簡答題"})[t]||t;}
-function publicImageUrl(path){return path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${path}`:null;}
+function publicImageUrl(path){
+  if(!path || typeof path!=="string")return null;
+  if(/^https:\/\//i.test(path))return path;
+  return `${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
 function editQuestion(id){
   const q=myQuestions.find(x=>x.id===id);if(!q)return;
   $("editQuestionId").value=q.id;$("qType").value=q.type;$("qText").value=q.question_text;
@@ -351,7 +364,7 @@ async function loadResults(){
     results=await rpc("get_results",{p_room_id:session.room});
     gradingQueue=await rpc("get_grading_queue",{p_room_id:session.room});
     const reviewed=await rpc("list_questions",{p_room_id:session.room,p_include_answers:true});
-    allQuestions=(reviewed||allQuestions).map(q=>({...q,option_image_urls:(q.option_image_paths||[]).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));
+    allQuestions=(reviewed||allQuestions).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));
   }else {results=[];gradingQueue=[];}
 }
 const originalRefresh=refreshAll;
