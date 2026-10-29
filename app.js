@@ -99,7 +99,7 @@ $("createBtn").addEventListener("click",()=>joinRoom(true));
 $("leaveBtn").addEventListener("click",()=>resetToSetup());
 $("qType").addEventListener("change",updateQuestionType);
 function renderChoiceEditor(values=[] , selected="", images=[]) {
-  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc(values[i]||"")}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?"已附圖片；上傳新圖片可替換":""}</span></div>`).join("");
+  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc((values[i]||"").startsWith("__FQ_IMAGE_ONLY_")?"":(values[i]||""))}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?"已附圖片；上傳新圖片可替換":""}</span></div>`).join("");
 }
 function updatePointsHint(){
   const editing=$("editQuestionId").value;
@@ -130,7 +130,10 @@ $("questionForm").addEventListener("submit",async e=>{
   e.preventDefault();
   if(!roomData || roomData.status!=="draft") return toast("題庫已鎖定，不能修改。");
   const type=$("qType").value, text=$("qText").value.trim();
-  const options=type==="single"?[...document.querySelectorAll(".q-choice-text")].map(x=>x.value.trim()):type==="boolean"?["是","否"]:[];
+  const existing=myQuestions.find(q=>q.id===$("editQuestionId").value);
+  const optionEditors=[...document.querySelectorAll(".q-choice-text")];
+  const optionHasImage=i=>Boolean(document.querySelector(`[data-option-image="${i}"]`)?.files[0] || existing?.option_image_paths?.[i]);
+  const options=type==="single"?optionEditors.map((x,i)=>x.value.trim() || (optionHasImage(i)?`__FQ_IMAGE_ONLY_${i}__`:"")):type==="boolean"?["是","否"]:[];
   const selected=document.querySelector('input[name="qSingleCorrect"]:checked');
   const answer=type==="single" ? (selected?options[Number(selected.value)]:"") : type==="boolean" ? (document.querySelector('input[name="qBoolean"]:checked')?.value||"") : $("qAnswer").value.trim();
   const editing=$("editQuestionId").value;
@@ -138,10 +141,10 @@ $("questionForm").addEventListener("submit",async e=>{
   const used=other.reduce((v,q)=>v+Number(q.points),0);
   const remaining=10-other.length-1;
   const points=other.length===9?100-used:Number($("qPoints").value);
-  if(!text) return toast("請輸入題目。");
+  if(!text && !$("qImage").files[0] && !existing?.image_path) return toast("請輸入題目文字或上傳題幹圖片。");
   if(!answer) return toast("請填寫標準答案。");
   if(!Number.isInteger(points)||points<1||points>100) return toast("配分需為 1～100 的整數。");
-  if(type==="single" && (options.length!==4||options.some(o=>!o)||new Set(options).size!==4)) return toast("選擇題必須填寫四個不同的選項。");
+  if(type==="single" && (options.length!==4||options.some(o=>!o)||new Set(options).size!==4)) return toast("四個選項都必須有文字或圖片，而且文字選項不可重複。");
   if(used+points+remaining>100) return toast(`配分過高！還有 ${remaining} 題必須各保留至少 1 分。`);
   if(remaining===0 && used+points!==100) return toast("第 10 題必須補足至 100 分。");
   if(type==="boolean" && !["true","false","是","否"].includes(answer.toLowerCase())) return toast("是非題答案請填 true、false、是或否。");
@@ -150,7 +153,6 @@ $("questionForm").addEventListener("submit",async e=>{
   setBusy(true);
   try{
     let imagePath=null;
-    const existing=myQuestions.find(q=>q.id===$("editQuestionId").value);
     imagePath=existing?.image_path||null;
     async function uploadImage(file){
       if(!file) return null;
@@ -263,7 +265,7 @@ function renderPlayQuestion(q,i,answer){
   const opts=q.options||[];
   let input="";
   if(q.type==="single"||q.type==="boolean"){
-    input=`<div class="q-options">${opts.map((o,j)=>`<label class="option"><input type="radio" name="answer-${q.id}" value="${esc(o)}" ${answer===o?'checked':''}><span>${esc(o)}${q.option_image_urls?.[j]?`<img class="q-image option-image" src="${esc(q.option_image_urls[j])}" alt="選項 ${j+1} 圖片">`:""}</span></label>`).join("")}</div>`;
+    input=`<div class="q-options">${opts.map((o,j)=>`<label class="option"><input type="radio" name="answer-${q.id}" value="${esc(o)}" ${answer===o?'checked':''}><span>${esc(o.startsWith("__FQ_IMAGE_ONLY_")?"":o)}${q.option_image_urls?.[j]?`<img class="q-image option-image" src="${esc(q.option_image_urls[j])}" alt="選項 ${j+1} 圖片">`:""}</span></label>`).join("")}</div>`;
   }else if(q.type==="fill"){
     input=`<div class="field"><label>你的答案</label><input data-answer-for="${q.id}" value="${esc(answer||"")}" maxlength="1000" placeholder="輸入答案"></div>`;
   }else{
@@ -306,7 +308,7 @@ function renderResults(){
   }
   const board=[...results].sort((a,b)=>Number(b.total)-Number(a.total));
   $("leaderboard").innerHTML=`<h3>排行榜</h3>${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（有題目待評分）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
-  $("answerReview").innerHTML=allQuestions.map((q,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:""}${(q.option_image_urls||[]).map((u,j)=>u?`<div class="tiny">選項 ${j+1}<img class="q-image option-image" src="${esc(u)}" alt="選項圖片"></div>`:"").join("")}<div class="q-answer"><strong>標準／參考答案：</strong>${esc(q.correct_answer||"（待人工評分）")}<br>${q.explanation?`<strong>解析：</strong>${esc(q.explanation)}<br>`:""}<strong>出題者：</strong>${esc(q.author_nickname||"未知")}</div></article>`).join("");
+  $("answerReview").innerHTML=allQuestions.map((q,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:""}${(q.option_image_urls||[]).map((u,j)=>u?`<div class="tiny">選項 ${j+1}<img class="q-image option-image" src="${esc(u)}" alt="選項圖片"></div>`:"").join("")}<div class="q-answer"><strong>標準／參考答案：</strong>${esc(q.correct_answer?.startsWith("__FQ_IMAGE_ONLY_")?"圖片選項 "+String.fromCharCode(65+Number(q.correct_answer.match(/\d+/)?.[0]||0)):q.correct_answer||"（待人工評分）")}<br>${q.explanation?`<strong>解析：</strong>${esc(q.explanation)}<br>`:""}<strong>出題者：</strong>${esc(q.author_nickname||"未知")}</div></article>`).join("");
 }
 async function saveGrades(){
   const items=[];
@@ -351,7 +353,7 @@ function updateQuestionPreview(){
   if(t==="single"){
     inputs='<div class="q-options">'+[...document.querySelectorAll(".q-choice-text")].map((el,i)=>{
       const checked=document.querySelector('input[name="qSingleCorrect"]:checked')?.value===String(i);
-      return `<label class="option"><input type="radio" disabled ${checked?"checked":""}><span>${esc(el.value.trim()||`選項 ${String.fromCharCode(65+i)}`)}${img(document.querySelector(`[data-option-image="${i}"]`),existing?.option_image_paths?.[i],"選項圖片")}</span></label>`;
+      return `<label class="option"><input type="radio" disabled ${checked?"checked":""}><span>${esc(el.value.trim())}${img(document.querySelector(`[data-option-image="${i}"]`),existing?.option_image_paths?.[i],"選項圖片")}</span></label>`;
     }).join("")+"</div>";
   }else if(t==="boolean")inputs=`<div class="q-options"><label class="option"><input type="radio" disabled> 是</label><label class="option"><input type="radio" disabled> 否</label></div>`;
   else inputs='<input placeholder="作答時在這裡輸入答案" disabled>';
