@@ -53,3 +53,4 @@ footer{text-align:center;color:#8b9098;font-size:12px;padding:14px}
 .choice-editor {display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0;padding:8px;border:1px solid var(--border, #ccd3d8);border-radius:8px}.choice-editor .q-choice-text{flex:1;min-width:160px}.choice-editor label.tiny{max-width:230px}.option-image{max-height:160px;object-fit:contain;display:block;margin-top:8px}
 
 .member-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.member-row button{flex-shrink:0}#questionPreview{margin:18px 0}#questionPreview .q-card{border:2px dashed var(--line,#aaa)}
+
