@@ -148,7 +148,7 @@ function resetQuestionForm(){
   $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();updateQuestionPreview();
 }
 $("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();updateQuestionPreview();
-}
+
 $("cancelEditBtn").addEventListener("click",resetQuestionForm);
 $("questionForm").addEventListener("submit",async e=>{
   e.preventDefault();
