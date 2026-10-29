@@ -12,6 +12,8 @@ let gradingQueue = [];
 let lastQuestionType = "single";
 let textAnswersByType = {fill:"",short:""};
 let choiceDraft = null;
+// 作答草稿必須在可能觸發 refreshAll() 的工作階段恢復前初始化。
+let answerDraft = {};
 const SESSION_KEY="friends_quiz_tab_v4";
 function saveTabSession(){try{sessionStorage.setItem(SESSION_KEY,JSON.stringify({room:session.room,player:session.player,isHost:session.isHost,code:$("roomCode").value,nickname:$("nickname").value,view:currentView}));}catch{}}
 function clearTabSession(){try{sessionStorage.removeItem(SESSION_KEY);}catch{}}
@@ -147,8 +149,6 @@ function resetQuestionForm(){
   $("singleOptions").innerHTML="";renderChoiceEditor();$("currentQuestionImage").innerHTML="";
   $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();updateQuestionPreview();
 }
-$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();updateQuestionPreview();
-
 $("cancelEditBtn").addEventListener("click",resetQuestionForm);
 $("questionForm").addEventListener("submit",async e=>{
   e.preventDefault();
@@ -300,7 +300,6 @@ function renderPlayQuestion(q,i,answer){
   const image=q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:"";
   return `<article class="q-card" data-qcard="${q.id}"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${image}${input}</article>`;
 }
-let answerDraft={};
 function saveDraftAnswer(el){
   const qid=el.dataset.answerFor || el.name?.replace("answer-","");
   if(!qid)return;
