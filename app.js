@@ -9,6 +9,8 @@ let session = { room: null, player: null, isHost: false };
 let roomData = null, players = [], myQuestions = [], allQuestions = [], answers = [], results = [];
 let currentView = "home", busy = false;
 let gradingQueue = [];
+let reviewResponses = [];
+let reviewMode = "player", reviewSelected = "";
 let lastQuestionType = "single";
 let textAnswersByType = {fill:"",short:""};
 let choiceDraft = null;
@@ -224,7 +226,7 @@ async function refreshAll(){
     rpc("list_questions",{p_room_id:session.room}),
     rpc("submission_status",{p_room_id:session.room})
   ]);
-  roomData=room;players=people||[];myQuestions=(own||[]).map(normalizeOwnedQuestion);allQuestions=(questions||[]).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));answers=submits||[];
+  roomData=room;players=people||[];myQuestions=(own||[]).map(normalizeOwnedQuestion);allQuestions=(questions||[]).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:publicImageUrl(q.image_path)}));answers=submits||[];
   session.isHost=!!room.is_host;
   renderHome();renderMyQuestions();renderPlay();renderResults();
 }
@@ -236,6 +238,7 @@ function renderHome(){
   $("roomState").textContent=labels[roomData.status]||"房間狀態未知。";
   $("hostControls").hidden=!session.isHost;
   $("lockBtn").hidden=!session.isHost||roomData.status!=="draft";
+  $("unlockBtn").hidden=!session.isHost||roomData.status!=="locked";
   $("revealBtn").hidden=!session.isHost||roomData.status!=="locked";
   $("membersList").innerHTML=players.map(p=>`<li class="member-row"><span>${esc(p.nickname)}${p.is_host?' <strong>· 主持人</strong>':''}${p.question_count!==undefined?`<br><span class="muted tiny">已出題 ${p.question_count}/10</span>`:''}${p.submitted?' <span class="tiny">· 已交卷</span>':''}</span>${session.isHost && !p.is_host && roomData.status==="draft"?`<button type="button" class="small danger" data-kick="${esc(p.id)}">剔除</button>`:""}</li>`).join("");
   $("membersList").querySelectorAll("[data-kick]").forEach(b=>b.addEventListener("click",async()=>{
@@ -300,6 +303,11 @@ $("lockBtn").addEventListener("click",async()=>{
   if(!confirm("鎖定後所有人不能再修改題目。確定繼續？"))return;
   try{await rpc("lock_room",{p_room_id:session.room});await refreshAll();toast("題庫已鎖定。");}catch(e){toast(e.message);}
 });
+$("unlockBtn").addEventListener("click",async()=>{
+  if(!confirm("確定解鎖題庫？僅在所有人都尚未交卷時允許解鎖。"))return;
+  try{await rpc("unlock_room",{p_room_id:session.room});answerDraft={};await refreshAll();toast("已解鎖，可繼續修改題目。");}
+  catch(e){toast(e.message||"解鎖失敗");}
+});
 $("revealBtn").addEventListener("click",async()=>{
   const pending=answers.filter(a=>!a.submitted).length;
   if(pending && !confirm(`還有 ${pending} 位參加者尚未交卷。仍要公布答案嗎？`))return;
@@ -307,15 +315,23 @@ $("revealBtn").addEventListener("click",async()=>{
   try{await rpc("reveal_answers",{p_room_id:session.room});await refreshAll();toast("答案已公布。");}catch(e){toast(e.message);}
 });
 
+function playableQuestions(){
+  // 後端也會過濾；前端再排除自己的題目以避免舊 RPC 回傳造成誤顯示。
+  return allQuestions.filter(q=>q.author_id !== session.player && !myQuestions.some(m=>m.id===q.id));
+}
+function syncAnswerDraft(){
+  const ids=new Set(playableQuestions().map(q=>q.id));
+  for(const id of Object.keys(answerDraft))if(!ids.has(id))delete answerDraft[id];
+}
 function renderPlay(){
   const ready=roomData.status==="locked", revealed=roomData.status==="revealed";
   const mine=answers.find(a=>a.player_id===session.player);const alreadySubmitted=!!mine?.submitted;
   $("playNotice").textContent=ready?"請回答所有題目後再交卷。":revealed?"答案已公布，作答已結束。": "主持人鎖定題庫並開放作答後，即可開始。";
   $("submitAnswersBtn").hidden=!ready||alreadySubmitted;
   const saved={...(mine?.responses||{}),...answerDraft};
-  const playable=allQuestions;
-  $("playProgress").textContent=`${Object.values(saved).filter(v=>String(v||"").trim()).length} / ${playable.length}`;
-  $("playQuestions").innerHTML=ready?allQuestions.map((q,i)=>renderPlayQuestion(q,i,saved[q.id])).join(""):'';
+  syncAnswerDraft();const playable=playableQuestions();
+  $("playProgress").textContent=`${playable.filter(q=>String(saved[q.id]||"").trim()).length} / ${playable.length}`;
+  $("playQuestions").innerHTML=ready?playable.map((q,i)=>renderPlayQuestion(q,i,saved[q.id])).join(""):'';
   $("playQuestions").querySelectorAll("input,textarea").forEach(el=>el.addEventListener("input",()=>saveDraftAnswer(el)));
   $("submitAnswersBtn").onclick=submitAnswers;
 }
@@ -338,12 +354,12 @@ function saveDraftAnswer(el){
   const card=document.querySelector(`[data-qcard="${qid}"]`);
   if(el.type==="radio"){const chosen=card.querySelector("input[type=radio]:checked");answerDraft[qid]=chosen?.value??null;}
   else answerDraft[qid]=el.value;
-  $("playProgress").textContent=`${allQuestions.filter(q=>String(answerDraft[q.id]||"").trim()).length} / ${allQuestions.length}`;
+  $("playProgress").textContent=`${playableQuestions().filter(q=>String(answerDraft[q.id]||"").trim()).length} / ${playableQuestions().length}`;
 }
 async function submitAnswers(){
   if(!confirm("交卷後不能修改答案，確定交卷？"))return;
   const responses={};
-  for(const q of allQuestions){
+  for(const q of playableQuestions()){
     const card=document.querySelector(`[data-qcard="${q.id}"]`);
     if(!card)continue;
     if(q.type==="single"||q.type==="boolean")responses[q.id]=card.querySelector("input[type=radio]:checked")?.value??"";
@@ -365,8 +381,35 @@ function renderResults(){
   }
   const board=[...results].sort((a,b)=>Number(b.total)-Number(a.total));
   $("leaderboard").innerHTML=`<h3>排行榜</h3>${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（有題目待評分）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
-  $("answerReview").innerHTML=allQuestions.map((q,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題目圖片">`:""}${(q.option_image_urls||[]).map((u,j)=>u?`<div class="tiny">選項 ${j+1}<img class="q-image option-image" src="${esc(u)}" alt="選項圖片"></div>`:"").join("")}<div class="q-answer"><strong>標準／參考答案：</strong>${esc(q.correct_answer?.startsWith("__FQ_IMAGE_ONLY_")?"圖片選項 "+String.fromCharCode(65+Number(q.correct_answer.match(/\d+/)?.[0]||0)):q.correct_answer||"（待人工評分）")}<br>${q.explanation?`<strong>解析：</strong>${esc(q.explanation)}<br>`:""}<strong>出題者：</strong>${esc(q.author_nickname||"未知")}</div></article>`).join("");
+  renderAnswerReview();
 }
+
+function renderAnswerReview(){
+  const node=$("answerReview");
+  const people=players.filter(p=>reviewResponses.some(r=>r.player_id===p.id));
+  const authors=players.filter(p=>allQuestions.some(q=>q.author_id===p.id));
+  const choices=reviewMode==="player"?people:authors;
+  if(!choices.some(p=>p.id===reviewSelected))reviewSelected=choices.find(p=>p.id===session.player)?.id||choices[0]?.id||"";
+  const selected=reviewSelected;
+  const grouped=reviewMode==="player"?
+    allQuestions.filter(q=>q.author_id!==selected):
+    allQuestions.filter(q=>q.author_id===selected);
+  const rows=[];
+  for(const q of grouped){
+    const qs=reviewMode==="player"?reviewResponses.filter(r=>r.player_id===selected):reviewResponses.filter(r=>r.player_id!==q.author_id);
+    const attempts=qs.filter(r=>Object.prototype.hasOwnProperty.call(r.responses||{},q.id));
+    const answerHtml=attempts.map(r=>{
+      const player=players.find(p=>p.id===r.player_id);
+      return `<div class="q-answer"><strong>${esc(player?.nickname||r.nickname||"玩家")}：</strong>${esc(r.responses[q.id])}</div>`;
+    }).join("");
+    rows.push(`<article class="q-card"><div class="q-top"><span class="q-number">${esc(q.author_nickname||players.find(p=>p.id===q.author_id)?.nickname||"出題者")} 的題目</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div><div class="q-title">${esc(q.question_text)}</div>${q.image_url?`<img class="q-image" src="${esc(q.image_url)}" alt="題幹圖片">`:""}${(q.option_image_urls||[]).map((u,j)=>u?`<div class="tiny">選項 ${String.fromCharCode(65+j)}<img class="q-image option-image" src="${esc(u)}" alt="選項圖片"></div>`:"").join("")}<div class="q-answer"><strong>標準／參考答案：</strong>${esc(q.correct_answer?.startsWith("__FQ_IMAGE_ONLY_")?"圖片選項 "+String.fromCharCode(65+Number(q.correct_answer.match(/\d+/)?.[0]||0)):q.correct_answer||"（由出題者評分）")}</div>${answerHtml||'<p class="muted tiny">無作答紀錄</p>'}</article>`);
+  }
+  node.innerHTML=`<h3>作答紀錄</h3><div class="review-switch"><button type="button" id="reviewByPlayer" class="secondary ${reviewMode==="player"?"active":""}">依作答者</button><button type="button" id="reviewByAuthor" class="secondary ${reviewMode==="author"?"active":""}">依出題者</button></div><label for="reviewPerson">${reviewMode==="player"?"選擇作答者":"選擇出題者"}</label><select id="reviewPerson">${choices.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?"selected":""}>${esc(p.nickname)}${p.id===session.player?"（我）":""}</option>`).join("")}</select><div class="question-list">${rows.join("")||'<p class="muted">這個分類目前沒有作答內容。</p>'}</div>`;
+  $("reviewByPlayer").onclick=()=>{reviewMode="player";reviewSelected=session.player;renderAnswerReview();};
+  $("reviewByAuthor").onclick=()=>{reviewMode="author";reviewSelected="";renderAnswerReview();};
+  $("reviewPerson").onchange=e=>{reviewSelected=e.target.value;renderAnswerReview();};
+}
+
 async function saveGrades(){
   const items=[];
   for(const el of document.querySelectorAll("[data-grade-token]")){
@@ -382,9 +425,10 @@ async function loadResults(){
   if(roomData?.status==="revealed"){
     results=await rpc("get_results",{p_room_id:session.room});
     gradingQueue=await rpc("get_grading_queue",{p_room_id:session.room});
+    reviewResponses=await rpc("get_review_responses",{p_room_id:session.room});
     const reviewed=await rpc("list_questions",{p_room_id:session.room,p_include_answers:true});
-    allQuestions=(reviewed||allQuestions).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:q.image_path?`${cfg.SUPABASE_URL}/storage/v1/object/public/quiz-images/${q.image_path}`:null}));
-  }else {results=[];gradingQueue=[];}
+    allQuestions=(reviewed||allQuestions).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:publicImageUrl(q.image_path)}));
+  }else {results=[];gradingQueue=[];reviewResponses=[];}
 }
 const originalRefresh=refreshAll;
 refreshAll=async function(){
