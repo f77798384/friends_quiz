@@ -9,6 +9,9 @@ let session = { room: null, player: null, isHost: false };
 let roomData = null, players = [], myQuestions = [], allQuestions = [], answers = [], results = [];
 let currentView = "home", busy = false;
 let gradingQueue = [];
+let lastQuestionType = "single";
+let textAnswersByType = {fill:"",short:""};
+let choiceDraft = null;
 const SESSION_KEY="friends_quiz_tab_v4";
 function saveTabSession(){try{sessionStorage.setItem(SESSION_KEY,JSON.stringify({room:session.room,player:session.player,isHost:session.isHost,code:$("roomCode").value,nickname:$("nickname").value,view:currentView}));}catch{}}
 function clearTabSession(){try{sessionStorage.removeItem(SESSION_KEY);}catch{}}
@@ -99,7 +102,7 @@ $("createBtn").addEventListener("click",()=>joinRoom(true));
 $("leaveBtn").addEventListener("click",()=>resetToSetup());
 $("qType").addEventListener("change",updateQuestionType);
 function renderChoiceEditor(values=[] , selected="", images=[]) {
-  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc((values[i]||"").startsWith("__FQ_IMAGE_ONLY_")?"":(values[i]||""))}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?"已附圖片；上傳新圖片可替換":""}</span></div>`).join("");
+  const box=$("singleOptions"); box.innerHTML=Array.from({length:4},(_,i)=>`<div class="choice-editor"><label><input type="radio" name="qSingleCorrect" value="${i}" ${values[i]===selected && selected!==""?"checked":""}>${String.fromCharCode(65+i)}.</label><input class="q-choice-text" data-option-index="${i}" maxlength="250" placeholder="選項 ${String.fromCharCode(65+i)}" value="${esc((values[i]||"").startsWith("__FQ_IMAGE_ONLY_")?"":(values[i]||""))}"><label class="tiny">選項圖片（選填）<input class="q-option-image" data-option-image="${i}" type="file" accept="image/jpeg,image/png,image/webp"></label><span class="tiny muted">${images[i]?`<img class="q-image option-image" src="${esc(publicImageUrl(images[i]))}" alt="已儲存的選項 ${i+1} 圖片"><span>已附圖片；選擇新檔可替換</span>`:""}</span></div>`).join("");
 }
 function updatePointsHint(){
   const editing=$("editQuestionId").value;
@@ -114,16 +117,37 @@ function updatePointsHint(){
 $("qPoints").addEventListener("input",updatePointsHint);
 function updateQuestionType(){
   const t=$("qType").value;
+  if(lastQuestionType=== "single" && t!=="single"){
+    choiceDraft={values:[...document.querySelectorAll(".q-choice-text")].map(el=>el.value),
+      selected:document.querySelector('input[name="qSingleCorrect"]:checked')?.value??"",
+      images:[...document.querySelectorAll(".q-option-image")].map(el=>el.files?.[0]||null)};
+  }
+  if(["fill","short"].includes(lastQuestionType)) textAnswersByType[lastQuestionType]=$("qAnswer").value.startsWith("__FQ_IMAGE_ONLY_")?"":$("qAnswer").value;
+  if(t==="single" && !$('singleOptions').children.length) renderChoiceEditor();
+  if(t==="single" && choiceDraft && lastQuestionType!=="single"){
+    const stored=myQuestions.find(q=>q.id===$("editQuestionId").value);
+    renderChoiceEditor(choiceDraft.values,"",stored?.type==="single"?stored.option_image_paths||[]:[]);
+    const checked=document.querySelector(`input[name="qSingleCorrect"][value="${choiceDraft.selected}"]`);if(checked)checked.checked=true;
+    [...document.querySelectorAll(".q-option-image")].forEach((input,i)=>{
+      const f=choiceDraft.images[i];if(!f)return;
+      try {const dt=new DataTransfer();dt.items.add(f);input.files=dt.files;}catch{}
+    });
+  }
+  if(["fill","short"].includes(t)) $("qAnswer").value=textAnswersByType[t]||"";
   $("optionsField").hidden=t!=="single";
   $("booleanField").hidden=t!=="boolean";
   $("answerField").hidden=t==="single"||t==="boolean";
   $("imageField").hidden=false;
-  if(t==="single" && !$("singleOptions").children.length) renderChoiceEditor();
+  lastQuestionType=t;
   updateQuestionPreview();
 }
 function resetQuestionForm(){
-  $("editQuestionId").value="";$("questionForm").reset();$("qPoints").value=10;$("singleOptions").innerHTML="";renderChoiceEditor();$("currentQuestionImage").textContent="";
+  $("editQuestionId").value="";$("questionForm").reset();$("qType").value="single";$("qPoints").value=10;
+  choiceDraft=null;textAnswersByType={fill:"",short:""};lastQuestionType="single";
+  $("singleOptions").innerHTML="";renderChoiceEditor();$("currentQuestionImage").innerHTML="";
   $("saveQuestionBtn").textContent="儲存題目";$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();updateQuestionPreview();
+}
+$("cancelEditBtn").hidden=true;updateQuestionType();updatePointsHint();updateQuestionPreview();
 }
 $("cancelEditBtn").addEventListener("click",resetQuestionForm);
 $("questionForm").addEventListener("submit",async e=>{
@@ -132,10 +156,10 @@ $("questionForm").addEventListener("submit",async e=>{
   const type=$("qType").value, text=$("qText").value.trim();
   const existing=myQuestions.find(q=>q.id===$("editQuestionId").value);
   const optionEditors=[...document.querySelectorAll(".q-choice-text")];
-  const optionHasImage=i=>Boolean(document.querySelector(`[data-option-image="${i}"]`)?.files[0] || existing?.option_image_paths?.[i]);
+  const optionHasImage=i=>Boolean(document.querySelector(`[data-option-image="${i}"]`)?.files[0] || (existing?.type==="single" && existing?.option_image_paths?.[i]));
   const options=type==="single"?optionEditors.map((x,i)=>x.value.trim() || (optionHasImage(i)?`__FQ_IMAGE_ONLY_${i}__`:"")):type==="boolean"?["是","否"]:[];
   const selected=document.querySelector('input[name="qSingleCorrect"]:checked');
-  const answer=type==="single" ? (selected?options[Number(selected.value)]:"") : type==="boolean" ? (document.querySelector('input[name="qBoolean"]:checked')?.value||"") : $("qAnswer").value.trim();
+  const answer=type==="single" ? (selected?options[Number(selected.value)]:"") : type==="boolean" ? (document.querySelector('input[name="qBoolean"]:checked')?.value||"") : ($("qAnswer").value.startsWith("__FQ_IMAGE_ONLY_")?"":$("qAnswer").value.trim());
   const editing=$("editQuestionId").value;
   const other=myQuestions.filter(q=>q.id!==editing);
   const used=other.reduce((v,q)=>v+Number(q.points),0);
@@ -165,7 +189,7 @@ $("questionForm").addEventListener("submit",async e=>{
       return path;
     }
     imagePath=await uploadImage($("qImage").files[0]) || imagePath;
-    const optionImages=[...(existing?.option_image_paths||[])];
+    const optionImages=type==="single" && existing?.type==="single"?[...(existing?.option_image_paths||[])]:[];
     for(let i=0;i<4;i++){
       const file=document.querySelector(`[data-option-image="${i}"]`)?.files[0];
       if(file)optionImages[i]=await uploadImage(file);
@@ -226,9 +250,11 @@ function publicImageUrl(path){return path?`${cfg.SUPABASE_URL}/storage/v1/object
 function editQuestion(id){
   const q=myQuestions.find(x=>x.id===id);if(!q)return;
   $("editQuestionId").value=q.id;$("qType").value=q.type;$("qText").value=q.question_text;
-  $("qOptions").value=(q.options||[]).join("\n");$("qAnswer").value=q.correct_answer;
-  renderChoiceEditor(q.type==="single"?(q.options||[]):[],q.type==="single"?q.correct_answer:"",q.option_image_paths||[]);
-  $("currentQuestionImage").textContent=q.image_path?"已附題幹圖片；上傳新圖片可替換":"";
+  $("qImage").value="";choiceDraft=null;textAnswersByType={fill:"",short:""};lastQuestionType=q.type;
+  if(q.type==="fill"||q.type==="short")textAnswersByType[q.type]=q.correct_answer?.startsWith("__FQ_IMAGE_ONLY_")?"":q.correct_answer||"";
+  $("qOptions").value=(q.options||[]).join("\n");$("qAnswer").value=q.correct_answer?.startsWith("__FQ_IMAGE_ONLY_")?"":q.correct_answer||"";
+  renderChoiceEditor(q.type==="single"?(q.options||[]):[],q.type==="single"?q.correct_answer:"",q.type==="single"?q.option_image_paths||[]:[]);
+  $("currentQuestionImage").innerHTML=q.image_path?`<img class="q-image" src="${esc(publicImageUrl(q.image_path))}" alt="已儲存的題幹圖片"><span>已附題幹圖片；選擇新檔可替換</span>`:"";
   if(q.type==="boolean") {const radio=document.querySelector(`input[name="qBoolean"][value="${q.correct_answer}"]`);if(radio)radio.checked=true;}
   $("qExplanation").value=q.explanation||"";$("qPoints").value=q.points;
   $("saveQuestionBtn").textContent="更新題目";$("cancelEditBtn").hidden=false;updateQuestionType();updatePointsHint();updateQuestionPreview();
