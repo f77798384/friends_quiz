@@ -93,6 +93,11 @@
           <div class="field">
             <label for="qText">題目內容</label>
             <textarea id="qText" rows="3" maxlength="1200" required placeholder="輸入題目…"></textarea>
+          <div id="imageField" class="field">
+            <label for="qImage">題幹附圖（選填，JPG、PNG、WebP，最大 5 MB）</label>
+            <input id="qImage" type="file" accept="image/jpeg,image/png,image/webp">
+            <div id="currentQuestionImage" class="tiny muted"></div>
+          </div>
           </div>
           <div id="optionsField" class="field">
             <label>四個選項（點選左側圓鈕設定標準答案）</label>
@@ -113,16 +118,14 @@
             <input id="qPoints" type="number" min="1" max="100" value="10" required>
           </div>
           <p id="pointsHint" class="tiny muted"></p>
-          <div id="imageField" class="field">
-            <label for="qImage">題幹附圖（選填，JPG、PNG、WebP，最大 5 MB）</label>
-            <input id="qImage" type="file" accept="image/jpeg,image/png,image/webp">
-            <div id="currentQuestionImage" class="tiny muted"></div>
-          </div>
+
           <div class="button-row">
             <button id="saveQuestionBtn" class="primary" type="submit">儲存題目</button>
+            <button id="previewQuestionBtn" class="secondary" type="button">預覽題目</button>
             <button id="cancelEditBtn" class="secondary" type="button" hidden>取消編輯</button>
           </div>
         </form>
+        <section id="questionPreview" aria-label="題目預覽" hidden></section>
         <h3>已建立的題目</h3>
         <div id="myQuestions" class="question-list"></div>
       </section>
