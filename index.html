@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#171717">
   <title>朋友出題大會</title>
   <link rel="stylesheet" href="./style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='50' font-size='48'%3E%F0%9F%8E%B2%3C/text%3E%3C/svg%3E">
 </head>
 <body>
   <header class="topbar">
@@ -66,6 +67,7 @@
         <p id="roomState" class="notice">載入中…</p>
         <div id="hostControls" class="stack" hidden>
           <button id="lockBtn" class="primary">鎖定題庫並開放作答</button>
+<button id="unlockBtn" class="secondary" hidden>解鎖題庫</button>
           <button id="revealBtn" class="danger">公布答案並開始閱卷</button>
           <p class="tiny muted">公布答案後無法回復隱藏狀態。請先確認大家都已交卷。</p>
         </div>

@@ -303,7 +303,7 @@ $("lockBtn").addEventListener("click",async()=>{
   if(!confirm("鎖定後所有人不能再修改題目。確定繼續？"))return;
   try{await rpc("lock_room",{p_room_id:session.room});await refreshAll();toast("題庫已鎖定。");}catch(e){toast(e.message);}
 });
-$("unlockBtn").addEventListener("click",async()=>{
+$("unlockBtn")?.addEventListener("click",async()=>{
   if(!confirm("確定解鎖題庫？僅在所有人都尚未交卷時允許解鎖。"))return;
   try{await rpc("unlock_room",{p_room_id:session.room});answerDraft={};await refreshAll();toast("已解鎖，可繼續修改題目。");}
   catch(e){toast(e.message||"解鎖失敗");}
