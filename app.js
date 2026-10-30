@@ -9,6 +9,8 @@ let session = { room: null, player: null, isHost: false };
 let roomData = null, players = [], myQuestions = [], allQuestions = [], answers = [], results = [];
 let currentView = "home", busy = false;
 let gradingQueue = [];
+let scoreByAuthor = [];
+let leaderboardAuthor = "all";
 let reviewResponses = [];
 let reviewMode = "player", reviewSelected = "";
 let lastQuestionType = "single";
@@ -379,8 +381,21 @@ function renderResults(){
     $("manualGrades").innerHTML=gradingQueue.map((g,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">${esc(g.question_text)}</span><span class="q-meta">滿分 ${g.max_points}</span></div><p><strong>${esc(g.nickname||"未知玩家")}：</strong>${esc(g.response)}</p><p class="muted tiny">參考答案：${esc(g.correct_answer)}</p><label>給分（0～${g.max_points}）</label><input type="number" min="0" max="${g.max_points}" step="1" data-grade-token="${esc(g.token)}" value="${g.awarded_points??""}"></article>`).join("");
     $("saveGradesBtn").onclick=saveGrades;
   }
-  const board=[...results].sort((a,b)=>Number(b.total)-Number(a.total));
-  $("leaderboard").innerHTML=`<h3>排行榜</h3>${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（有題目待評分）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
+  // 依出題者切換榜單：總榜排除自己的題目，個別榜單不列出該出題者自己。
+  const authors = players.filter(p => scoreByAuthor.some(x => x.author_id === p.id));
+  if(leaderboardAuthor !== "all" && !authors.some(p => p.id === leaderboardAuthor)) leaderboardAuthor="all";
+  const visible = leaderboardAuthor === "all" ? results.map(p=>({
+    nickname:p.nickname,total:Number(p.total)||0,max:Number(p.max)||0,pending:!!p.pending
+  })) : scoreByAuthor.filter(x=>x.author_id===leaderboardAuthor).map(x=>({
+    nickname:x.nickname,total:Number(x.total)||0,max:Number(x.max)||0,pending:!!x.pending
+  }));
+  const board=[...visible].sort((a,b)=>b.total-a.total||a.nickname.localeCompare(b.nickname));
+  $("leaderboard").innerHTML=`<h3>排行榜</h3>
+    <label for="leaderboardAuthor">查看榜單</label>
+    <select id="leaderboardAuthor"><option value="all">全部出題者（總榜）</option>${authors.map(p=>`<option value="${esc(p.id)}" ${leaderboardAuthor===p.id?"selected":""}>${esc(p.nickname)} 出的題目</option>`).join("")}</select>
+    <p class="muted tiny">分母只包含該玩家實際需回答的題目；出題者不會回答自己的題目。</p>
+    ${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（有題目待評分）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
+  $("leaderboardAuthor").onchange=e=>{leaderboardAuthor=e.target.value;renderResults();};
   renderAnswerReview();
 }
 
@@ -424,11 +439,12 @@ async function saveGrades(){
 async function loadResults(){
   if(roomData?.status==="revealed"){
     results=await rpc("get_results",{p_room_id:session.room});
+    scoreByAuthor=await rpc("get_score_by_author",{p_room_id:session.room});
     gradingQueue=await rpc("get_grading_queue",{p_room_id:session.room});
     reviewResponses=await rpc("get_review_responses",{p_room_id:session.room});
     const reviewed=await rpc("list_questions",{p_room_id:session.room,p_include_answers:true});
     allQuestions=(reviewed||allQuestions).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:publicImageUrl(q.image_path)}));
-  }else {results=[];gradingQueue=[];reviewResponses=[];}
+  }else {results=[];scoreByAuthor=[];gradingQueue=[];reviewResponses=[];}
 }
 const originalRefresh=refreshAll;
 refreshAll=async function(){
