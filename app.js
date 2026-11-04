@@ -11,6 +11,7 @@ let currentView = "home", busy = false;
 let gradingQueue = [];
 let scoreByAuthor = [];
 let leaderboardAuthor = "all";
+let boardMode = "mixed", paperOverview = [], mixedResults = [];
 let reviewResponses = [];
 let reviewMode = "player", reviewSelected = "";
 let lastQuestionType = "single";
@@ -28,7 +29,7 @@ function resetToSetup(message="已離開房間"){
 async function restoreTabSession(){
   let saved;try{saved=JSON.parse(sessionStorage.getItem(SESSION_KEY)||"null");}catch{clearTabSession();return;}
   if(!saved?.room||!saved?.player)return;
-  session={room:saved.room,player:saved.player,isHost:!!saved.isHost};
+  session={room:saved.room,player:saved.player,isHost:!!saved.isHost,role:"author"};
   $("roomCode").value=saved.code||"";$("nickname").value=saved.nickname||"";
   try{
     await refreshAll();
@@ -85,12 +86,12 @@ async function joinRoom(create=false){
     if(create){
       roomCode=randomCode();
       const room=await rpc("create_room",{p_code:roomCode,p_nickname:nickname,p_pin:pin});
-      session={room:room.room_id,player:room.player_id,isHost:true};
+      session={room:room.room_id,player:room.player_id,isHost:true,role:"author"};
       $("roomCode").value=roomCode;
       toast("房間建立成功，請記下房間代碼："+roomCode);
     }else{
       const joined=await rpc("join_room",{p_code:roomCode,p_nickname:nickname,p_pin:pin});
-      session={room:joined.room_id,player:joined.player_id,isHost:joined.is_host};
+      session={room:joined.room_id,player:joined.player_id,isHost:joined.is_host,role:joined.player_role||"author"};
       toast("已加入房間。");
     }
     $("setup").hidden=true; $("app").hidden=false;
@@ -229,12 +230,15 @@ async function refreshAll(){
     rpc("submission_status",{p_room_id:session.room})
   ]);
   roomData=room;players=people||[];myQuestions=(own||[]).map(normalizeOwnedQuestion);allQuestions=(questions||[]).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:publicImageUrl(q.image_path)}));answers=submits||[];
-  session.isHost=!!room.is_host;
+  session.isHost=!!room.is_host;session.role=room.player_role||"author";
+  document.querySelector('[data-view="author"]').hidden=session.role==="answer_only";
+  if(session.role==="answer_only" && currentView==="author")currentView="home";
+  $("playerLabel").textContent=(players.find(p=>p.id===session.player)?.nickname||"玩家")+(session.isHost?"（主持人）":session.role==="answer_only"?"（純作答者）":"");
   renderHome();renderMyQuestions();renderPlay();renderResults();
 }
 function renderHome(){
   $("memberCount").textContent=players.length;
-  $("questionCount").textContent=allQuestions.length;
+  $("questionCount").textContent=roomData.question_count??allQuestions.length;
   $("submittedCount").textContent=answers.filter(a=>a.submitted).length;
   const labels={draft:"出題中：大家可以新增或修改題目。",locked:"題庫已鎖定：可以開始作答。",revealed:"答案已公布：正在閱卷／查看結果。"};
   $("roomState").textContent=labels[roomData.status]||"房間狀態未知。";
@@ -242,7 +246,7 @@ function renderHome(){
   $("lockBtn").hidden=!session.isHost||roomData.status!=="draft";
   $("unlockBtn").hidden=!session.isHost||roomData.status!=="locked";
   $("revealBtn").hidden=!session.isHost||roomData.status!=="locked";
-  $("membersList").innerHTML=players.map(p=>`<li class="member-row"><span>${esc(p.nickname)}${p.is_host?' <strong>· 主持人</strong>':''}${p.question_count!==undefined?`<br><span class="muted tiny">已出題 ${p.question_count}/10</span>`:''}${p.submitted?' <span class="tiny">· 已交卷</span>':''}</span>${session.isHost && !p.is_host && roomData.status==="draft"?`<button type="button" class="small danger" data-kick="${esc(p.id)}">剔除</button>`:""}</li>`).join("");
+  $("membersList").innerHTML=players.map(p=>`<li class="member-row"><span>${esc(p.nickname)}${p.is_host?' <strong>· 主持人</strong>':''}${p.player_role==='answer_only'?' <span class="tiny">· 純作答者</span>':''}${p.question_count!==undefined?`<br><span class="muted tiny">已出題 ${p.question_count}/10</span>`:''}${p.submitted?' <span class="tiny">· 已交卷</span>':''}</span>${session.isHost && !p.is_host && roomData.status==="draft"?`<button type="button" class="small danger" data-kick="${esc(p.id)}">剔除</button>`:""}</li>`).join("");
   $("membersList").querySelectorAll("[data-kick]").forEach(b=>b.addEventListener("click",async()=>{
     const target=players.find(p=>p.id===b.dataset.kick);
     if(!target||!confirm(`確定剔除 ${target.nickname}？對方的題目也會刪除，且只有在出題階段可以剔除。`))return;
@@ -252,8 +256,8 @@ function renderHome(){
 function renderMyQuestions(){
   $("myQuestionCount").textContent=`${myQuestions.length} / 10（${myQuestions.reduce((sum,q)=>sum+Number(q.points),0)} 分）`;
   updatePointsHint();
-  $("authorLocked").hidden=roomData.status==="draft";
-  $("questionForm").hidden=roomData.status!=="draft";
+  $("authorLocked").hidden=roomData.status==="draft" && session.role!=="answer_only";
+  $("questionForm").hidden=roomData.status!=="draft" || session.role==="answer_only";
   $("myQuestions").innerHTML=myQuestions.map((q,i)=>`<article class="q-card">
     <div class="q-top"><span class="q-number">第 ${i+1} 題</span><span class="q-meta">${typeName(q.type)} · ${q.points} 分</span></div>
     <div class="q-title">${esc(q.question_text)}</div>
@@ -374,29 +378,60 @@ async function submitAnswers(){
 function renderResults(){
   const revealed=roomData.status==="revealed";
   $("resultsNotice").textContent=revealed?"答案已公布。由每題原出題者批改簡答題（顯示作答者）；選擇、是非與填空題自動評分。":"所有人交卷後，由主持人公布答案。";
-  $("gradingArea").innerHTML="";$("leaderboard").innerHTML="";$("answerReview").innerHTML="";
+  $("gradingArea").innerHTML="";$("leaderboard").innerHTML="";$("answerReview").innerHTML="";$("paperArea").innerHTML="";
   if(!revealed)return;
   if(gradingQueue.length){
     $("gradingArea").innerHTML=`<h3>我出的簡答題・人工閱卷</h3><p class="muted tiny">僅批改其他玩家對我所出題目的答案。</p><div id="manualGrades" class="question-list"></div><button id="saveGradesBtn" class="primary wide">儲存我的評分</button>`;
     $("manualGrades").innerHTML=gradingQueue.map((g,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">${esc(g.question_text)}</span><span class="q-meta">滿分 ${g.max_points}</span></div><p><strong>${esc(g.nickname||"未知玩家")}：</strong>${esc(g.response)}</p><p class="muted tiny">參考答案：${esc(g.correct_answer)}</p><label>給分（0～${g.max_points}）</label><input type="number" min="0" max="${g.max_points}" step="1" data-grade-token="${esc(g.token)}" value="${g.awarded_points??""}"></article>`).join("");
     $("saveGradesBtn").onclick=saveGrades;
   }
-  // 依出題者切換榜單：總榜排除自己的題目，個別榜單不列出該出題者自己。
-  const authors = players.filter(p => scoreByAuthor.some(x => x.author_id === p.id));
-  if(leaderboardAuthor !== "all" && !authors.some(p => p.id === leaderboardAuthor)) leaderboardAuthor="all";
-  const visible = leaderboardAuthor === "all" ? results.map(p=>({
-    nickname:p.nickname,total:Number(p.total)||0,max:Number(p.max)||0,pending:!!p.pending
-  })) : scoreByAuthor.filter(x=>x.author_id===leaderboardAuthor).map(x=>({
-    nickname:x.nickname,total:Number(x.total)||0,max:Number(x.max)||0,pending:!!x.pending
-  }));
-  const board=[...visible].sort((a,b)=>b.total-a.total||a.nickname.localeCompare(b.nickname));
-  $("leaderboard").innerHTML=`<h3>排行榜</h3>
-    <label for="leaderboardAuthor">查看榜單</label>
-    <select id="leaderboardAuthor"><option value="all">全部出題者（總榜）</option>${authors.map(p=>`<option value="${esc(p.id)}" ${leaderboardAuthor===p.id?"selected":""}>${esc(p.nickname)} 出的題目</option>`).join("")}</select>
-    <p class="muted tiny">分母只包含該玩家實際需回答的題目；出題者不會回答自己的題目。</p>
-    ${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> <span class="score-name">${esc(p.nickname)}</span>${p.pending?' <span class="tiny muted">（有題目待評分）</span>':''}</span><span class="score-value">${p.total} / ${p.max} 分</span></div>`).join("")||'<p class="muted">尚無成績。</p>'}`;
+  const authors=players.filter(p=>scoreByAuthor.some(x=>x.author_id===p.id));
+  if(leaderboardAuthor!=="all"&&!authors.some(p=>p.id===leaderboardAuthor))leaderboardAuthor="all";
+  const onlineRows=leaderboardAuthor==="all"?results.map(p=>({nickname:p.nickname,total:Number(p.total)||0,max:Number(p.max)||0,pending:!!p.pending})):scoreByAuthor.filter(x=>x.author_id===leaderboardAuthor).map(x=>({nickname:x.nickname,total:Number(x.total)||0,max:Number(x.max)||0,pending:!!x.pending}));
+  const mixedRows=(leaderboardAuthor==="all"?mixedResults:mixedResults.map(p=>{
+    const o=scoreByAuthor.find(x=>x.author_id===leaderboardAuthor&&x.player_id===p.player_id);
+    const selectedPaper=paperOverview.filter(x=>x.author_id===leaderboardAuthor&&x.player_id===p.player_id);
+    if(!o&&!selectedPaper.length)return null;
+    const pt=selectedPaper.reduce((sum,x)=>sum+(Number(x.points)||0),0);
+    const pm=selectedPaper.reduce((sum,x)=>sum+Number(x.max_points),0);
+    return {...p,online_total:Number(o?.total)||0,online_max:Number(o?.max)||0,paper_total:pt,paper_max:pm,
+      total:(Number(o?.total)||0)+pt,max:(Number(o?.max)||0)+pm,pending:!!o?.pending||selectedPaper.some(x=>x.points==null),paper_pending:selectedPaper.some(x=>x.points==null)};
+  }).filter(Boolean));
+  const rows=(boardMode==="online"?onlineRows:boardMode==="paper"?mixedRows.map(p=>({nickname:p.nickname,total:p.paper_total??0,max:p.paper_max??0,pending:p.paper_pending??p.pending})).filter(p=>p.max>0):mixedRows);
+  const board=[...rows].sort((a,b)=>((b.max?b.total/b.max:0)-(a.max?a.total/a.max:0))||b.total-a.total||a.nickname.localeCompare(b.nickname));
+  $("leaderboard").innerHTML=`<h3>排行榜</h3><label for="boardMode">成績類別</label>
+    <select id="boardMode"><option value="mixed" ${boardMode==="mixed"?"selected":""}>綜合（線上＋紙本）</option><option value="online" ${boardMode==="online"?"selected":""}>線上成績</option><option value="paper" ${boardMode==="paper"?"selected":""}>紙本成績</option></select>
+    <label for="leaderboardAuthor">依出題者篩選</label>
+    <select id="leaderboardAuthor"><option value="all">全部出題者</option>${authors.map(p=>`<option value="${esc(p.id)}" ${leaderboardAuthor===p.id?"selected":""}>${esc(p.nickname)} 的題目</option>`).join("")}</select>
+    <p class="tiny muted">依得分率排序，並顯示原始得分／可得滿分；不計自己的試卷。紙本未登錄不等於 0 分。</p>
+    ${board.map((p,i)=>`<div class="score-row"><span><span class="q-number">#${i+1}</span> ${esc(p.nickname)}${p.pending?' <small>（待評分／登錄）</small>':''}</span><span class="score-value">${p.total} / ${p.max} 分 · ${p.max?((p.total/p.max)*100).toFixed(1):"0.0"}%</span></div>`).join("")||'<p class="muted">尚無這個類別的成績。</p>'}`;
   $("leaderboardAuthor").onchange=e=>{leaderboardAuthor=e.target.value;renderResults();};
+  $("boardMode").onchange=e=>{boardMode=e.target.value;renderResults();};
+  renderPaperArea();
   renderAnswerReview();
+}
+
+function renderPaperArea(){
+  const node=$("paperArea"); if(!node)return;
+  if(roomData.status!=="revealed"){node.innerHTML="";return;}
+  const authors=players.filter(p=>p.player_role!=="answer_only");
+  const exams=[...new Map(paperOverview.map(x=>[x.exam_id,x])).values()];
+  node.innerHTML=`<h3>紙本試卷（額外加分）</h3>
+    ${session.isHost?`<form id="paperExamForm" class="stack"><label>試卷名稱 <input id="paperTitle" maxlength="120" required placeholder="例如：朋友回憶測驗"></label><label>出題者 <select id="paperAuthor">${authors.map(a=>`<option value="${esc(a.id)}">${esc(a.nickname)}</option>`).join("")}</select></label><label>滿分 <input id="paperMax" type="number" min="1" max="10000" value="100" required></label><button class="secondary" type="submit">新增紙本試卷</button></form>`:""}
+    ${exams.map(e=>`<div class="q-card"><strong>${esc(e.title)}</strong> · ${esc(e.author_nickname)} 出題 · ${e.max_points} 分
+      ${paperOverview.filter(x=>x.exam_id===e.exam_id).map(x=>`<div class="score-row"><span>${esc(x.nickname)}</span>${session.isHost?`<label class="tiny">得分 <input type="number" min="0" max="${e.max_points}" step="1" data-paper-exam="${esc(e.exam_id)}" data-paper-player="${esc(x.player_id)}" value="${x.points??""}" placeholder="待登錄" style="width:100px"></label>`:`<span>${x.points==null?"待登錄":`${x.points} / ${e.max_points}`}</span>`}</div>`).join("")}</div>`).join("")||'<p class="muted">尚未建立紙本試卷。</p>'}`;
+  if(session.isHost){
+    $("paperExamForm").onsubmit=async e=>{
+      e.preventDefault();try{await rpc("create_paper_exam",{p_title:$("paperTitle").value,p_author_id:$("paperAuthor").value,p_max_points:Number($("paperMax").value)});await refreshAll();toast("紙本試卷已建立");}catch(err){toast(err.message||"新增失敗");}
+    };
+    node.querySelectorAll("[data-paper-exam]").forEach(el=>el.addEventListener("change",async()=>{
+      // 空白＝尚未登錄，避免意外將空值寫成 0。
+      if(el.value==="")return toast("空白代表未登錄；請輸入 0 或實際得分");
+      const pts=Number(el.value);
+      if(!Number.isInteger(pts)||pts<0||pts>Number(el.max))return toast("紙本得分不合法");
+      try{await rpc("save_paper_score",{p_exam_id:el.dataset.paperExam,p_target_id:el.dataset.paperPlayer,p_points:pts});await refreshAll();toast("已儲存紙本分數");}catch(err){toast(err.message||"儲存失敗");}
+    }));
+  }
 }
 
 function renderAnswerReview(){
@@ -439,12 +474,14 @@ async function saveGrades(){
 async function loadResults(){
   if(roomData?.status==="revealed"){
     results=await rpc("get_results",{p_room_id:session.room});
+    mixedResults=await rpc("get_mixed_results",{p_room_id:session.room});
+    paperOverview=await rpc("get_paper_overview",{p_room_id:session.room});
     scoreByAuthor=await rpc("get_score_by_author",{p_room_id:session.room});
     gradingQueue=await rpc("get_grading_queue",{p_room_id:session.room});
     reviewResponses=await rpc("get_review_responses",{p_room_id:session.room});
     const reviewed=await rpc("list_questions",{p_room_id:session.room,p_include_answers:true});
     allQuestions=(reviewed||allQuestions).map(q=>({...q,option_image_urls:normalizeImagePaths(q.option_image_paths).map(publicImageUrl),image_url:publicImageUrl(q.image_path)}));
-  }else {results=[];scoreByAuthor=[];gradingQueue=[];reviewResponses=[];}
+  }else {results=[];scoreByAuthor=[];gradingQueue=[];reviewResponses=[];mixedResults=[];paperOverview=[];}
 }
 const originalRefresh=refreshAll;
 refreshAll=async function(){

@@ -21,7 +21,7 @@
   <main class="container">
     <section id="setup" class="panel">
       <h2>進入遊戲</h2>
-      <p class="muted">輸入房間代碼、暱稱與個人 PIN。主持人請選擇「建立房間」。</p>
+      <p class="muted">輸入房間代碼、暱稱與個人 PIN。題庫鎖定前加入為出題者；鎖定後加入為純作答者。</p>
       <label>Supabase 設定狀態</label>
       <div id="configNotice" class="notice">請先編輯 config.js，填入 Supabase URL 與 anon key。</div>
       <div class="field">
@@ -144,6 +144,7 @@
         <p id="resultsNotice" class="notice">所有人交卷後，由主持人公布答案。</p>
         <div id="gradingArea"></div>
         <div id="leaderboard"></div>
+        <div id="paperArea"></div>
         <div id="answerReview" class="question-list"></div>
       </section>
     </section>
