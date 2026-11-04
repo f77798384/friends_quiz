@@ -385,7 +385,7 @@ function renderResults(){
     $("manualGrades").innerHTML=gradingQueue.map((g,i)=>`<article class="q-card"><div class="q-top"><span class="q-number">${esc(g.question_text)}</span><span class="q-meta">滿分 ${g.max_points}</span></div><p><strong>${esc(g.nickname||"未知玩家")}：</strong>${esc(g.response)}</p><p class="muted tiny">參考答案：${esc(g.correct_answer)}</p><label>給分（0～${g.max_points}）</label><input type="number" min="0" max="${g.max_points}" step="1" data-grade-token="${esc(g.token)}" value="${g.awarded_points??""}"></article>`).join("");
     $("saveGradesBtn").onclick=saveGrades;
   }
-  const authors=players.filter(p=>scoreByAuthor.some(x=>x.author_id===p.id));
+  const authors=players.filter(p=>scoreByAuthor.some(x=>x.author_id===p.id)||paperOverview.some(x=>x.author_id===p.id));
   if(leaderboardAuthor!=="all"&&!authors.some(p=>p.id===leaderboardAuthor))leaderboardAuthor="all";
   const onlineRows=leaderboardAuthor==="all"?results.map(p=>({nickname:p.nickname,total:Number(p.total)||0,max:Number(p.max)||0,pending:!!p.pending})):scoreByAuthor.filter(x=>x.author_id===leaderboardAuthor).map(x=>({nickname:x.nickname,total:Number(x.total)||0,max:Number(x.max)||0,pending:!!x.pending}));
   const mixedRows=(leaderboardAuthor==="all"?mixedResults:mixedResults.map(p=>{
@@ -414,22 +414,40 @@ function renderResults(){
 function renderPaperArea(){
   const node=$("paperArea"); if(!node)return;
   if(roomData.status!=="revealed"){node.innerHTML="";return;}
-  const authors=players.filter(p=>p.player_role!=="answer_only");
+  // 紙本出題者只能是鎖定後加入、沒有出線上題目的玩家。
+  const offlineAuthors=players.filter(p=>p.player_role==="answer_only");
   const exams=[...new Map(paperOverview.map(x=>[x.exam_id,x])).values()];
+  const usedAuthors=new Set(exams.map(e=>e.author_id));
+  const eligible=offlineAuthors.filter(p=>!usedAuthors.has(p.id));
   node.innerHTML=`<h3>紙本試卷（額外加分）</h3>
-    ${session.isHost?`<form id="paperExamForm" class="stack"><label>試卷名稱 <input id="paperTitle" maxlength="120" required placeholder="例如：朋友回憶測驗"></label><label>出題者 <select id="paperAuthor">${authors.map(a=>`<option value="${esc(a.id)}">${esc(a.nickname)}</option>`).join("")}</select></label><label>滿分 <input id="paperMax" type="number" min="1" max="10000" value="100" required></label><button class="secondary" type="submit">新增紙本試卷</button></form>`:""}
-    ${exams.map(e=>`<div class="q-card"><strong>${esc(e.title)}</strong> · ${esc(e.author_nickname)} 出題 · ${e.max_points} 分
+    ${session.isHost?(eligible.length?`<form id="paperExamForm" class="stack">
+      <label>線下出題者 <select id="paperAuthor" required>${eligible.map(a=>`<option value="${esc(a.id)}">${esc(a.nickname)}</option>`).join("")}</select></label>
+      <p class="tiny muted">試卷名稱直接使用出題者暱稱，滿分固定 100 分；每位線下出題者只能建立一份紙本試卷。</p>
+      <button class="secondary" type="submit">新增紙本試卷（100 分）</button></form>`:`<p class="tiny muted">目前沒有可新增的線下出題者。請確認純作答者已加入，且尚未建立紙本試卷。</p>`):""}
+    ${exams.map(e=>`<div class="q-card"><div class="q-top"><strong>${esc(e.author_nickname)} 的紙本試卷</strong><span>${e.max_points} 分</span></div>
+      ${session.isHost?`<button type="button" class="small danger" data-delete-paper="${esc(e.exam_id)}">刪除這份紙本試卷</button>`:""}
       ${paperOverview.filter(x=>x.exam_id===e.exam_id).map(x=>`<div class="score-row"><span>${esc(x.nickname)}</span>${session.isHost?`<label class="tiny">得分 <input type="number" min="0" max="${e.max_points}" step="1" data-paper-exam="${esc(e.exam_id)}" data-paper-player="${esc(x.player_id)}" value="${x.points??""}" placeholder="待登錄" style="width:100px"></label>`:`<span>${x.points==null?"待登錄":`${x.points} / ${e.max_points}`}</span>`}</div>`).join("")}</div>`).join("")||'<p class="muted">尚未建立紙本試卷。</p>'}`;
   if(session.isHost){
-    $("paperExamForm").onsubmit=async e=>{
-      e.preventDefault();try{await rpc("create_paper_exam",{p_title:$("paperTitle").value,p_author_id:$("paperAuthor").value,p_max_points:Number($("paperMax").value)});await refreshAll();toast("紙本試卷已建立");}catch(err){toast(err.message||"新增失敗");}
+    const form=$("paperExamForm");
+    if(form)form.onsubmit=async e=>{
+      e.preventDefault();
+      try{await rpc("create_paper_exam",{p_author_id:$("paperAuthor").value});await refreshAll();toast("已建立 100 分紙本試卷");}
+      catch(err){toast(err.message||"新增失敗");}
     };
+    node.querySelectorAll("[data-delete-paper]").forEach(btn=>btn.addEventListener("click",async()=>{
+      const exam=exams.find(e=>e.exam_id===btn.dataset.deletePaper);
+      if(!exam)return;
+      const registered=paperOverview.filter(x=>x.exam_id===exam.exam_id&&x.points!==null).length;
+      if(!confirm(`確定刪除「${exam.author_nickname} 的紙本試卷」？\n已登錄的 ${registered} 筆紙本分數會一起永久刪除，此操作無法復原。`))return;
+      try{await rpc("delete_paper_exam",{p_exam_id:exam.exam_id});await refreshAll();toast("已刪除紙本試卷及相關分數");}
+      catch(err){toast(err.message||"刪除失敗");}
+    }));
     node.querySelectorAll("[data-paper-exam]").forEach(el=>el.addEventListener("change",async()=>{
-      // 空白＝尚未登錄，避免意外將空值寫成 0。
       if(el.value==="")return toast("空白代表未登錄；請輸入 0 或實際得分");
       const pts=Number(el.value);
       if(!Number.isInteger(pts)||pts<0||pts>Number(el.max))return toast("紙本得分不合法");
-      try{await rpc("save_paper_score",{p_exam_id:el.dataset.paperExam,p_target_id:el.dataset.paperPlayer,p_points:pts});await refreshAll();toast("已儲存紙本分數");}catch(err){toast(err.message||"儲存失敗");}
+      try{await rpc("save_paper_score",{p_exam_id:el.dataset.paperExam,p_target_id:el.dataset.paperPlayer,p_points:pts});await refreshAll();toast("已儲存紙本分數");}
+      catch(err){toast(err.message||"儲存失敗");}
     }));
   }
 }
